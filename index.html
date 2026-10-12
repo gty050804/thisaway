@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Thisaway — 原创棋类游戏</title>
+  <style>
+:root {
+  --bg: #1a1520;
+  --surface: #252030;
+  --surface2: #2f2840;
+  --accent: #fe96ac;
+  --accent2: #ffa8c8;
+  --red-piece: #e85d6a;
+  --blue-piece: #5b8def;
+  --text: #f5eef5;
+  --muted: #a89bb0;
+  --cell-light: #3d3550;
+  --cell-dark: #342c45;
+  --highlight: rgba(254, 150, 172, 0.45);
+  --capture: rgba(232, 93, 106, 0.55);
+  --radius: 12px;
+  --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(254, 150, 172, 0.15), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(91, 141, 239, 0.08), transparent),
+    var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 2rem;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: clamp(2rem, 5vw, 2.75rem);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  background: linear-gradient(135deg, var(--accent), var(--blue-piece));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.tagline {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.layout {
+  display: grid;
+  gap: 1.5rem;
+}
+
+@media (min-width: 768px) {
+  .layout {
+    grid-template-columns: 1fr 340px;
+    align-items: start;
+  }
+}
+
+.panel {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.35rem;
+  box-shadow: var(--shadow);
+  border: 1px solid rgba(254, 150, 172, 0.12);
+}
+
+.panel h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+  color: var(--accent);
+}
+
+.panel ul {
+  margin: 0;
+  padding-left: 1.15rem;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.panel li {
+  margin-bottom: 0.45rem;
+}
+
+.panel li strong,
+.panel li em {
+  color: var(--text);
+  font-style: normal;
+}
+
+.hint {
+  margin: 1rem 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 0.75rem;
+}
+
+.game-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: repeat(7, 1fr);
+  gap: 3px;
+  width: min(92vw, 340px);
+  aspect-ratio: 1;
+  padding: 8px;
+  background: var(--surface2);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  border: 1px solid rgba(254, 150, 172, 0.15);
+}
+
+.cell {
+  border: none;
+  border-radius: 6px;
+  cursor: default;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  font-size: clamp(0.55rem, 2.2vw, 0.72rem);
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  position: relative;
+}
+
+.cell.light {
+  background: var(--cell-light);
+}
+
+.cell.dark {
+  background: var(--cell-dark);
+}
+
+.cell.highlight {
+  box-shadow: inset 0 0 0 3px var(--accent);
+  cursor: pointer;
+}
+
+.cell.capture {
+  box-shadow: inset 0 0 0 3px var(--red-piece);
+  background: var(--capture) !important;
+  cursor: pointer;
+}
+
+.cell.highlight:hover,
+.cell.capture:hover {
+  transform: scale(1.06);
+  z-index: 1;
+}
+
+.cell.visited-red {
+  background: rgba(232, 93, 106, 0.35) !important;
+}
+
+.cell.visited-blue {
+  background: rgba(91, 141, 239, 0.35) !important;
+}
+
+.cell.piece-red {
+  background: var(--red-piece) !important;
+  box-shadow: 0 2px 8px rgba(232, 93, 106, 0.5);
+}
+
+.cell.piece-blue {
+  background: var(--blue-piece) !important;
+  box-shadow: 0 2px 8px rgba(91, 141, 239, 0.5);
+}
+
+.hud {
+  width: min(92vw, 340px);
+  text-align: center;
+}
+
+.status {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.status.player-turn {
+  color: var(--blue-piece);
+}
+
+.status.ai-turn {
+  color: var(--accent);
+}
+
+.status.win {
+  color: #7dcea0;
+}
+
+.status.lose {
+  color: var(--red-piece);
+}
+
+.score,
+.timer,
+.ai-stats {
+  margin: 0.2rem 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.ai-stats {
+  font-size: 0.78rem;
+  font-family: ui-monospace, monospace;
+}
+
+.actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+  margin-top: 0.85rem;
+}
+
+.btn {
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn:hover {
+  background: var(--surface2);
+  border-color: var(--accent);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #2a1520;
+  border: none;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.05);
+}
+
+.footer {
+  margin-top: 2rem;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.footer strong {
+  color: var(--accent);
+}
+
+  </style>
+</head>
+<body>
+<div class="page">
+    <header class="header">
+      <h1>Thisaway</h1>
+      <p class="tagline">原创 7×7 策略棋 · 马走日 & 田字格 · 抢 4 局胜</p>
+    </header>
+
+    <main class="layout">
+      <section class="panel rules" aria-label="游戏规则">
+        <h2>规则</h2>
+        <ul>
+          <li>双方自对角出发（你：右下，AI：左上）。<strong>第一局你先行</strong>；从第二局起，<strong>上一局获胜方先手</strong>。</li>
+          <li>每步可选：<em>马走日</em>（±2,±1）或 <em>田字格</em>（±1,±1 对角）。</li>
+          <li>不可走入已走过的格子；可落在对手位置<strong>直接吃子</strong>获胜。</li>
+          <li>或将对手<strong>困毙</strong>（对手无合法步、你仍可走）亦获胜。</li>
+        </ul>
+        <p id="hint-cells" class="hint">可落子格会高亮显示；红色边框为可吃 AI 的位置。</p>
+      </section>
+
+      <section class="game-area">
+        <div id="board" class="board" role="grid" aria-label="7乘7棋盘"></div>
+        <div class="hud">
+          <p id="status" class="status player-turn">加载中…</p>
+          <p id="score" class="score">比分  AI 0 — 0  你</p>
+          <p id="timer" class="timer"></p>
+          <p id="ai-stats" class="ai-stats"></p>
+          <div class="actions">
+            <button type="button" id="btn-restart" class="btn">重新开始</button>
+            <button type="button" id="btn-next" class="btn btn-primary" hidden>下一局</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>© Phier · 游戏设计 <strong>Thisaway</strong> · 网页版 AI 采用 Negamax + Alpha-Beta 搜索</p>
+    </footer>
+  </div>
+  <script>
+/**
+ * Thisaway — 7×7 原创棋类游戏引擎
+ * 红方(AI) [0,0]，蓝方(玩家) [6,6]；马走日 + 田字格；不可重复经过
+ */
+(function (global) {
+  'use strict';
+
+  const SIZE = 7;
+  const RED = 1;
+  const BLUE = 2;
+  const EMPTY = 0;
+
+  /** @type {{dr:number,dc:number}[]} */
+  const OFFSETS = [
+    { dr: 1, dc: 2 }, { dr: 2, dc: 1 }, { dr: 2, dc: -1 }, { dr: 1, dc: -2 },
+    { dr: -1, dc: -2 }, { dr: -2, dc: -1 }, { dr: -2, dc: 1 }, { dr: -1, dc: 2 },
+    { dr: 1, dc: 1 }, { dr: 1, dc: -1 }, { dr: -1, dc: -1 }, { dr: -1, dc: 1 },
+  ];
+
+  function inBounds(r, c) {
+    return r >= 0 && r < SIZE && c >= 0 && c < SIZE;
+  }
+
+  function posKey(r, c) {
+    return r * SIZE + c;
+  }
+
+  function cloneBoard(board) {
+    return board.slice();
+  }
+
+  function createInitialState() {
+    const board = new Int8Array(SIZE * SIZE);
+    return {
+      board,
+      red: { r: 0, c: 0 },
+      blue: { r: 6, c: 6 },
+      current: BLUE,
+      roundOver: false,
+      matchOver: false,
+      winner: null,
+      lastMove: null,
+    };
+  }
+
+  function getSidePos(state, side) {
+    return side === RED ? state.red : state.blue;
+  }
+
+  function opponent(side) {
+    return side === RED ? BLUE : RED;
+  }
+
+  function isOnBoard(state, side) {
+    const p = getSidePos(state, side);
+    return p.r >= 0 && p.r < SIZE && p.c >= 0 && p.c < SIZE;
+  }
+
+  /**
+   * @returns {{r:number,c:number,capture?:boolean}[]}
+   */
+  function getLegalMoves(state, side) {
+    if (!isOnBoard(state, side)) return [];
+    const from = getSidePos(state, side);
+    const opp = getSidePos(state, opponent(side));
+    const oppAlive = isOnBoard(state, opponent(side));
+    const moves = [];
+
+    for (const { dr, dc } of OFFSETS) {
+      const r = from.r + dr;
+      const c = from.c + dc;
+      if (!inBounds(r, c)) continue;
+
+      if (oppAlive && r === opp.r && c === opp.c) {
+        moves.push({ r, c, capture: true });
+        continue;
+      }
+
+      if (state.board[posKey(r, c)] === EMPTY) {
+        moves.push({ r, c, capture: false });
+      }
+    }
+    return moves;
+  }
+
+  function applyMove(state, side, move) {
+    const next = {
+      board: cloneBoard(state.board),
+      red: { ...state.red },
+      blue: { ...state.blue },
+      current: side,
+      roundOver: false,
+      matchOver: false,
+      winner: null,
+      lastMove: { side, ...move },
+    };
+
+    const from = getSidePos(next, side);
+    next.board[posKey(from.r, from.c)] = side;
+
+    if (move.capture) {
+      const oppSide = opponent(side);
+      const opp = getSidePos(next, oppSide);
+      if (move.r === opp.r && move.c === opp.c) {
+        if (oppSide === RED) next.red = { r: -1, c: -1 };
+        else next.blue = { r: -1, c: -1 };
+      }
+    }
+
+    if (side === RED) next.red = { r: move.r, c: move.c };
+    else next.blue = { r: move.r, c: move.c };
+
+    const win = resolveOutcome(next, side);
+    if (win) {
+      next.roundOver = true;
+      next.winner = win;
+    }
+
+    return next;
+  }
+
+  /** 走子后判胜：吃子 / 困毙对手 / 己方走入死胡同 */
+  function resolveOutcome(state, mover) {
+    if (state.lastMove && state.lastMove.capture) {
+      return mover;
+    }
+
+    const opp = opponent(mover);
+    const myMoves = getLegalMoves(state, mover);
+    const oppMoves = getLegalMoves(state, opp);
+
+    if (oppMoves.length === 0 && myMoves.length > 0) return mover;
+    if (myMoves.length === 0 && oppMoves.length > 0) return opp;
+    if (myMoves.length === 0 && oppMoves.length === 0) return null;
+    return null;
+  }
+
+  function switchTurn(state) {
+    state.current = opponent(state.current);
+  }
+
+  function countVisited(state) {
+    let n = 0;
+    for (let i = 0; i < state.board.length; i++) {
+      if (state.board[i] !== EMPTY) n++;
+    }
+    return n;
+  }
+
+  global.ThisawayEngine = {
+    SIZE,
+    RED,
+    BLUE,
+    EMPTY,
+    OFFSETS,
+    inBounds,
+    posKey,
+    createInitialState,
+    getLegalMoves,
+    applyMove,
+    getSidePos,
+    opponent,
+    isOnBoard,
+    switchTurn,
+    countVisited,
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+  </script>
+  <script>
+/**
+ * Thisaway AI — 强调远见(可达深度)与后备(选择数量)
+ */
+(function (global) {
+  'use strict';
+
+  const E = global.ThisawayEngine;
+  const { RED, BLUE, EMPTY, SIZE, posKey, getLegalMoves, applyMove, getSidePos, isOnBoard, countVisited } = E;
+
+  const WIN = 100000;
+  const LOSE = -100000;
+  const FATAL = LOSE + 1;
+  const WIN_NOW = WIN;
+  const WIN_NEXT = WIN - 1;
+
+  /** 对应 Master.m：depth_weight / node_weight 比例 */
+  const W = { depth: 6.5, node: 3.8, control: 1.2, defense: 2.2, trap: 18, squeeze: 22, flex: 1.0 };
+
+  let zobristCell;
+  let zobristRed;
+  let zobristBlue;
+  let zobristTurn;
+
+  (function initZobrist() {
+    const rnd = () => (Math.random() * 0x7fffffff) | 0;
+    zobristCell = new Int32Array(SIZE * SIZE * 3);
+    zobristRed = new Int32Array(SIZE * SIZE);
+    zobristBlue = new Int32Array(SIZE * SIZE);
+    zobristTurn = rnd();
+    for (let i = 0; i < zobristCell.length; i++) zobristCell[i] = rnd();
+    for (let i = 0; i < zobristRed.length; i++) {
+      zobristRed[i] = rnd();
+      zobristBlue[i] = rnd();
+    }
+  })();
+
+  const tt = new Map();
+  const history = new Int32Array(SIZE * SIZE * SIZE * SIZE);
+
+  let deadline = 0;
+  let aborted = false;
+  let nodes = 0;
+  let lastDepth = 0;
+
+  function timedOut() {
+    return deadline > 0 && performance.now() >= deadline;
+  }
+
+  function hashState(state, sideToMove) {
+    let h = sideToMove === RED ? zobristTurn : 0;
+    for (let i = 0; i < state.board.length; i++) {
+      const v = state.board[i];
+      if (v) h ^= zobristCell[i * 3 + v];
+    }
+    if (isOnBoard(state, RED)) h ^= zobristRed[posKey(state.red.r, state.red.c)];
+    if (isOnBoard(state, BLUE)) h ^= zobristBlue[posKey(state.blue.r, state.blue.c)];
+    return h >>> 0;
+  }
+
+  function histIndex(from, to) {
+    return ((from.r * SIZE + from.c) * SIZE * SIZE + to.r * SIZE + to.c) | 0;
+  }
+
+  function mob(state, side) {
+    return getLegalMoves(state, side).length;
+  }
+
+  function willBeCapturedNextTurn(state, side, move) {
+    if (move.capture) return false;
+    const next = applyMove(state, side, move);
+    if (next.winner === side) return false;
+    const me = getSidePos(next, side);
+    for (const m of getLegalMoves(next, E.opponent(side))) {
+      if (m.r === me.r && m.c === me.c) return true;
+    }
+    return false;
+  }
+
+  function hangsAfterMove(state, side, move) {
+    return willBeCapturedNextTurn(state, side, move);
+  }
+
+  function isForcedOpponentLoss(stateAfterOurMove, mover) {
+    const opp = E.opponent(mover);
+    const oppMoves = getLegalMoves(stateAfterOurMove, opp);
+    if (oppMoves.length === 0) return true;
+    for (const om of oppMoves) {
+      if (applyMove(stateAfterOurMove, opp, om).winner !== mover) return false;
+    }
+    return true;
+  }
+
+  function classifyMove(state, side, move) {
+    if (move.capture) return 'win_now';
+    const next = applyMove(state, side, move);
+    if (next.winner === side) return 'win_now';
+    if (next.winner === E.opponent(side)) return 'fatal';
+    if (isForcedOpponentLoss(next, side)) return 'win_next';
+    if (willBeCapturedNextTurn(state, side, move)) return 'fatal';
+    for (const om of getLegalMoves(next, E.opponent(side))) {
+      if (applyMove(next, E.opponent(side), om).winner === E.opponent(side)) return 'fatal';
+    }
+    return 'safe';
+  }
+
+  function filterNotCaptured(state, side, moves) {
+    return moves.filter((m) => m.capture || !willBeCapturedNextTurn(state, side, m));
+  }
+
+  function partitionMoves(state, side, moves) {
+    const winNow = [];
+    const winNext = [];
+    const safe = [];
+    const fatal = [];
+    for (const m of moves) {
+      const kind = classifyMove(state, side, m);
+      if (kind === 'win_now') winNow.push(m);
+      else if (kind === 'win_next') winNext.push(m);
+      else if (kind === 'safe') safe.push(m);
+      else fatal.push(m);
+    }
+    return { winNow, winNext, safe, fatal };
+  }
+
+  function canCapture(state, side) {
+    const opp = E.opponent(side);
+    if (!isOnBoard(state, opp)) return false;
+    const oppPos = getSidePos(state, opp);
+    for (const m of getLegalMoves(state, side)) {
+      if (m.capture && m.r === oppPos.r && m.c === oppPos.c) return true;
+    }
+    return false;
+  }
+
+  function movesFrom(state, side, from) {
+    const oppSide = E.opponent(side);
+    const opp = getSidePos(state, oppSide);
+    const oppLive = isOnBoard(state, oppSide);
+    const out = [];
+    for (const { dr, dc } of E.OFFSETS) {
+      const r = from.r + dr;
+      const c = from.c + dc;
+      if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) continue;
+      if (oppLive && r === opp.r && c === opp.c) out.push({ r, c, capture: true });
+      else if (state.board[posKey(r, c)] === EMPTY) out.push({ r, c, capture: false });
+    }
+    return out;
+  }
+
+  function reachableSpaces(state, side, steps) {
+    const start = getSidePos(state, side);
+    if (!isOnBoard(state, side)) return 0;
+    const seen = new Set([posKey(start.r, start.c)]);
+    let layer = [start];
+    let total = 0;
+    for (let s = 0; s < steps && layer.length; s++) {
+      const next = [];
+      for (const p of layer) {
+        for (const m of movesFrom(state, side, p)) {
+          if (m.capture) continue;
+          const k = posKey(m.r, m.c);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          total++;
+          next.push(m);
+        }
+      }
+      layer = next;
+    }
+    return total;
+  }
+
+  /** MATLAB 早期：再走一步后的后备选择总量 */
+  function twoStepBranchCount(state, side, move) {
+    const next = applyMove(state, side, move);
+    if (next.winner) return 100;
+    let total = 0;
+    for (const m2 of getLegalMoves(next, side)) {
+      if (hangsAfterMove(next, side, m2)) continue;
+      const n2 = applyMove(next, side, m2);
+      total += Math.max(0, mob(n2, side));
+    }
+    return total;
+  }
+
+  /** 离边越近越差，鼓励占开阔区域 */
+  function opennessAt(r, c) {
+    const edge = Math.min(r, c, SIZE - 1 - r, SIZE - 1 - c);
+    return edge;
+  }
+
+  function controlRatio(state, side) {
+    const mine = getLegalMoves(state, side);
+    const theirs = getLegalMoves(state, E.opponent(side));
+    if (!theirs.length) return 1;
+    const set = new Set(theirs.map((m) => posKey(m.r, m.c)));
+    let hit = 0;
+    for (const m of mine) {
+      if (set.has(posKey(m.r, m.c))) hit++;
+    }
+    return hit / theirs.length;
+  }
+
+  function safeMoveRatio(state, side) {
+    const moves = getLegalMoves(state, side);
+    if (!moves.length) return 0;
+    let safe = 0;
+    for (const m of moves) {
+      if (m.capture || !hangsAfterMove(state, side, m)) safe++;
+    }
+    return safe / moves.length;
+  }
+
+  /**
+   * 着法灵活度：即时后备 + 多步可达空间 + 2 步分支（MATLAB 思路）
+   */
+  function moveFlexibility(state, side, move) {
+    const next = applyMove(state, side, move);
+    if (next.winner === side) return 10000;
+    const m0 = mob(next, side);
+    const r3 = reachableSpaces(next, side, 3);
+    const r4 = reachableSpaces(next, side, 4);
+    const r5 = reachableSpaces(next, side, 5);
+    const branch = twoStepBranchCount(state, side, move);
+    const open = opennessAt(move.r, move.c) * 3;
+    return m0 * 14 + r3 * 6 + r4 * 4 + r5 * 2 + branch * 3.5 + open;
+  }
+
+  function evaluate(state) {
+    if (canCapture(state, RED)) return WIN - 120;
+    if (canCapture(state, BLUE)) return LOSE + 120;
+
+    const redM = getLegalMoves(state, RED);
+    const blueM = getLegalMoves(state, BLUE);
+
+    if (!blueM.length && redM.length) return WIN - 80;
+    if (!redM.length && blueM.length) return LOSE + 80;
+    if (!redM.length && !blueM.length) return 0;
+
+    const visited = countVisited(state);
+    const reachSteps = visited > 22 ? 5 : visited > 12 ? 4 : 3;
+
+    const redReach = reachableSpaces(state, RED, reachSteps);
+    const blueReach = reachableSpaces(state, BLUE, reachSteps);
+    const depthTerm = (redReach - blueReach) * W.depth;
+
+    const nodeTerm = (redM.length - blueM.length) * W.node;
+    const ctrlTerm = (controlRatio(state, RED) - controlRatio(state, BLUE)) * W.control * 14;
+
+    const redSafe = safeMoveRatio(state, RED);
+    const blueSafe = safeMoveRatio(state, BLUE);
+    const defTerm = (redSafe - blueSafe) * W.defense * 35;
+
+    const me = getSidePos(state, RED);
+    const dangerTerm = canCapture(state, BLUE) ? -120 : 0;
+
+    let trapTerm = 0;
+    if (blueM.length <= 2 && redM.length > blueM.length) trapTerm += (3 - blueM.length) * W.trap;
+    if (redM.length <= 2 && blueM.length > redM.length) trapTerm -= (3 - redM.length) * W.trap;
+
+    const redOpen = opennessAt(me.r, me.c);
+    const bluePos = getSidePos(state, BLUE);
+    const openTerm = (redOpen - opennessAt(bluePos.r, bluePos.c)) * 2.5;
+
+    return depthTerm + nodeTerm + ctrlTerm + defTerm + dangerTerm + trapTerm + openTerm;
+  }
+
+  function sideEval(state, side) {
+    const e = evaluate(state);
+    return side === RED ? e : -e;
+  }
+
+  function worstLineAfterRedMove(afterRed, redMobBefore, reachBefore) {
+    const blueMoves = getLegalMoves(afterRed, BLUE);
+    if (!blueMoves.length) return WIN - 60;
+
+    blueMoves.sort((a, b) => {
+      const na = applyMove(afterRed, BLUE, a);
+      const nb = applyMove(afterRed, BLUE, b);
+      return mob(na, RED) - mob(nb, RED);
+    });
+
+    let worst = Infinity;
+    for (const bm of blueMoves) {
+      if (timedOut()) break;
+      const afterBlue = applyMove(afterRed, BLUE, bm);
+      if (afterBlue.winner === BLUE) return LOSE + 80;
+
+      const redMobNow = mob(afterBlue, RED);
+      const reachNow = reachableSpaces(afterBlue, RED, 4);
+      const mobDrop = redMobBefore - redMobNow;
+      const reachDrop = reachBefore - reachNow;
+
+      let bestCont = -Infinity;
+      for (const rm of getLegalMoves(afterBlue, RED)) {
+        if (hangsAfterMove(afterBlue, RED, rm)) continue;
+        const afterRed2 = applyMove(afterBlue, RED, rm);
+        if (afterRed2.winner === RED) {
+          bestCont = WIN - 40;
+          break;
+        }
+        let cont = evaluate(afterRed2) + moveFlexibility(afterBlue, RED, rm) * 0.15;
+        if (mob(afterRed2, RED) <= 2) cont -= 50;
+        if (bestCont < cont) bestCont = cont;
+      }
+      if (bestCont === -Infinity) bestCont = LOSE + 60;
+
+      let line = bestCont;
+      if (mobDrop >= 1) line -= W.squeeze * mobDrop;
+      if (mobDrop >= 3) line -= 55;
+      if (redMobNow <= 2) line -= 45;
+      if (reachDrop >= 3) line -= 35;
+
+      if (line < worst) worst = line;
+    }
+    return worst;
+  }
+
+  function isTactical(state, side) {
+    if (canCapture(state, side) || canCapture(state, E.opponent(side))) return true;
+    const myM = mob(state, side);
+    const opM = mob(state, E.opponent(side));
+    return myM <= 4 || opM <= 4;
+  }
+
+  function sortMoves(moves, state, side, from, pv) {
+    moves.sort((a, b) => {
+      let sa = 0;
+      let sb = 0;
+      if (a.capture) sa += 500000;
+      if (b.capture) sb += 500000;
+      const na = applyMove(state, side, a);
+      const nb = applyMove(state, side, b);
+      if (na.winner === side) sa += 500000;
+      if (nb.winner === side) sb += 500000;
+      if (isForcedOpponentLoss(na, side)) sa += 400000;
+      if (isForcedOpponentLoss(nb, side)) sb += 400000;
+      if (willBeCapturedNextTurn(state, side, a)) sa -= 600000;
+      if (willBeCapturedNextTurn(state, side, b)) sb -= 600000;
+
+      sa += moveFlexibility(state, side, a) * 80;
+      sb += moveFlexibility(state, side, b) * 80;
+
+      if (pv) {
+        if (a.r === pv.r && a.c === pv.c) sa += 50000;
+        if (b.r === pv.r && b.c === pv.c) sb += 50000;
+      }
+      sa += history[histIndex(from, a)] * 4;
+      sb += history[histIndex(from, b)] * 4;
+      return sb - sa;
+    });
+    return moves;
+  }
+
+  function storeTT(key, depth, score, flag, best) {
+    if (tt.size > 80000) tt.clear();
+    const old = tt.get(key);
+    if (!old || old.depth <= depth) tt.set(key, { depth, score, flag, best });
+  }
+
+  function quiescence(state, alpha, beta, side, qDepth) {
+    nodes++;
+    if (aborted || timedOut()) {
+      aborted = true;
+      return sideEval(state, side);
+    }
+
+    const stand = sideEval(state, side);
+    if (qDepth <= 0) return stand;
+    if (stand >= beta) return beta;
+    if (stand > alpha) alpha = stand;
+
+    const from = getSidePos(state, side);
+    const moves = sortMoves(getLegalMoves(state, side), state, side, from, null);
+
+    for (const move of moves) {
+      const next = applyMove(state, side, move);
+      let score;
+      if (next.winner === side) score = WIN - 4;
+      else if (next.winner === E.opponent(side)) score = LOSE + 4;
+      else if (classifyMove(state, side, move) === 'fatal') {
+        score = side === RED ? FATAL : -FATAL;
+      } else if (move.capture || isTactical(next, E.opponent(side))) {
+        score = -quiescence(next, -beta, -alpha, E.opponent(side), qDepth - 1);
+      } else {
+        continue;
+      }
+      if (score >= beta) return beta;
+      if (score > alpha) alpha = score;
+    }
+    return alpha;
+  }
+
+  function negamax(state, depth, alpha, beta, side, ply) {
+    nodes++;
+    if (aborted || timedOut()) {
+      aborted = true;
+      return sideEval(state, side);
+    }
+
+    const key = hashState(state, side);
+    const entry = tt.get(key);
+    if (entry && entry.depth >= depth) {
+      if (entry.flag === 0) return entry.score;
+      if (entry.flag < 0 && entry.score <= alpha) return entry.score;
+      if (entry.flag > 0 && entry.score >= beta) return entry.score;
+    }
+
+    const moves = getLegalMoves(state, side);
+    if (!moves.length) return side === RED ? LOSE + ply : WIN - ply;
+    if (depth === 0) return quiescence(state, alpha, beta, side, 5);
+
+    const from = getSidePos(state, side);
+    const ordered = sortMoves(moves.slice(), state, side, from, entry && entry.best);
+    let bestScore = -Infinity;
+    let bestMove;
+    let flag = 0;
+
+    for (const move of ordered) {
+      const kind = classifyMove(state, side, move);
+      const next = applyMove(state, side, move);
+      let score;
+
+      if (next.winner === RED) score = WIN - ply;
+      else if (next.winner === BLUE) score = LOSE + ply;
+      else if (kind === 'fatal') score = side === RED ? FATAL : -FATAL;
+      else if (kind === 'win_next') score = side === RED ? WIN_NEXT - ply : -(WIN_NEXT - ply);
+      else score = -negamax(next, depth - 1, -beta, -alpha, E.opponent(side), ply + 1);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = move;
+      }
+      if (score > alpha) {
+        alpha = score;
+        flag = 0;
+      }
+      if (alpha >= beta) {
+        flag = 1;
+        if (kind === 'safe' || kind === 'win_next') history[histIndex(from, move)] += depth * depth;
+        break;
+      }
+    }
+
+    if (bestScore <= alpha) flag = -1;
+    else if (bestScore >= beta) flag = 1;
+    storeTT(key, depth, bestScore, flag, bestMove);
+    return bestScore;
+  }
+
+  function scoreRootMove(state, move, depth) {
+    const kind = classifyMove(state, RED, move);
+    if (kind === 'win_now') return WIN_NOW;
+    if (kind === 'win_next') return WIN_NEXT;
+    if (kind === 'fatal') return FATAL;
+
+    const next = applyMove(state, RED, move);
+    const searchScore = -negamax(next, depth - 1, -Infinity, Infinity, BLUE, 1);
+    const flex = moveFlexibility(state, RED, move) * W.flex;
+
+    const redMobBefore = mob(state, RED);
+    const reachBefore = reachableSpaces(state, RED, 4);
+    const pessimistic = worstLineAfterRedMove(next, redMobBefore, reachBefore);
+
+    const tactical = searchScore * 0.62 + pessimistic * 0.38;
+    return tactical + flex;
+  }
+
+  function pickBestByScore(scored) {
+    if (!scored.length) return null;
+    const max = Math.max(...scored.map((x) => x.score));
+    const pool = scored.filter((x) => x.score >= max - 0.5);
+    return pool[0].move;
+  }
+
+  function pickBestFlexible(state, moves) {
+    let best = moves[0];
+    let bestFlex = -Infinity;
+    for (const m of moves) {
+      const f = moveFlexibility(state, RED, m);
+      if (f > bestFlex) {
+        bestFlex = f;
+        best = m;
+      }
+    }
+    return best;
+  }
+
+  function chooseMove(state, options = {}) {
+    const limit = options.timeLimitMs ?? 1100;
+    const maxDepth = options.maxDepth ?? 18;
+    const allMoves = getLegalMoves(state, RED);
+    if (!allMoves.length) return null;
+
+    const { winNow, winNext, safe, fatal } = partitionMoves(state, RED, allMoves);
+    if (winNow.length) return winNow[0];
+    if (winNext.length) return winNext[0];
+
+    const notCaptured = filterNotCaptured(state, RED, safe.length ? safe : allMoves);
+    const searchPool = notCaptured.length ? notCaptured : fatal.length ? fatal : allMoves;
+
+    deadline = performance.now() + limit;
+    aborted = false;
+    nodes = 0;
+    lastDepth = 0;
+
+    let lastScored = searchPool.map((move) => ({ move, score: -Infinity }));
+
+    for (let depth = 1; depth <= maxDepth; depth++) {
+      if (timedOut()) break;
+      const hint = tt.get(hashState(state, RED));
+      const ordered = sortMoves(searchPool.slice(), state, RED, state.red, hint && hint.best);
+      const roundScores = [];
+      let finished = true;
+
+      for (const move of ordered) {
+        if (timedOut()) {
+          finished = false;
+          break;
+        }
+        roundScores.push({ move, score: scoreRootMove(state, move, depth) });
+        if (aborted) {
+          finished = false;
+          break;
+        }
+      }
+
+      if (finished && roundScores.length) {
+        lastScored = roundScores;
+        lastDepth = depth;
+      } else break;
+    }
+
+    if (!lastScored.some((x) => x.score > FATAL + 100)) {
+      lastScored = searchPool.map((move) => ({
+        move,
+        score: moveFlexibility(state, RED, move),
+      }));
+    }
+
+    let chosen = pickBestByScore(lastScored);
+    const survivable = filterNotCaptured(state, RED, allMoves);
+
+    if (survivable.length) {
+      if (chosen && !willBeCapturedNextTurn(state, RED, chosen)) return chosen;
+      return pickBestFlexible(state, survivable);
+    }
+
+    return chosen || searchPool[0];
+  }
+
+  function newRound() {
+    tt.clear();
+    history.fill(0);
+    zobristTurn = (Math.random() * 0x7fffffff) | 0;
+  }
+
+  function getLastSearchStats() {
+    return { nodes, depth: lastDepth };
+  }
+
+  global.ThisawayAI = { chooseMove, newRound, getLastSearchStats, WEIGHTS: W };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+  </script>
+  <script>
+/**
+ * Thisaway 网页版 — UI 与对局流程
+ */
+(function () {
+  'use strict';
+
+  const E = window.ThisawayEngine;
+  const AI = window.ThisawayAI;
+  const { SIZE, RED, BLUE, getLegalMoves, applyMove, createInitialState } = E;
+
+  const TOTAL_ROUNDS = 7;
+  const WINS_NEEDED = 4;
+  const TURN_LIMIT_SEC = 60;
+
+  /** @type {ReturnType<typeof createInitialState>} */
+  let state;
+  let roundNumber = 1;
+  let aiWins = 0;
+  let playerWins = 0;
+  /** @type {number|null} 上一局胜者，用于决定本局先手 */
+  let lastRoundWinner = null;
+  let aiThinking = false;
+  let turnStart = 0;
+  let timerId = null;
+  let movesRemaining = 1;
+  let timeFaults = { red: 0, blue: 0 };
+
+  const boardEl = document.getElementById('board');
+  const statusEl = document.getElementById('status');
+  const scoreEl = document.getElementById('score');
+  const timerEl = document.getElementById('timer');
+  const aiStatsEl = document.getElementById('ai-stats');
+  const btnRestart = document.getElementById('btn-restart');
+  const btnNext = document.getElementById('btn-next');
+  const hintEl = document.getElementById('hint-cells');
+
+  function buildBoardDOM() {
+    boardEl.innerHTML = '';
+    for (let r = 0; r < SIZE; r++) {
+      for (let c = 0; c < SIZE; c++) {
+        const cell = document.createElement('button');
+        cell.type = 'button';
+        cell.className = 'cell' + ((r + c) % 2 === 0 ? ' light' : ' dark');
+        cell.dataset.r = String(r);
+        cell.dataset.c = String(c);
+        cell.setAttribute('aria-label', `格子 ${r + 1},${c + 1}`);
+        cell.addEventListener('click', onCellClick);
+        boardEl.appendChild(cell);
+      }
+    }
+  }
+
+  function render() {
+    const cells = boardEl.querySelectorAll('.cell');
+    cells.forEach((cell) => {
+      const r = +cell.dataset.r;
+      const c = +cell.dataset.c;
+      const idx = E.posKey(r, c);
+      cell.classList.remove('visited-red', 'visited-blue', 'highlight', 'capture');
+      cell.textContent = '';
+
+      if (state.board[idx] === RED) cell.classList.add('visited-red');
+      if (state.board[idx] === BLUE) cell.classList.add('visited-blue');
+
+      if (state.red.r === r && state.red.c === c && E.isOnBoard(state, RED)) {
+        cell.classList.add('piece-red');
+        cell.textContent = 'AI';
+      } else {
+        cell.classList.remove('piece-red');
+      }
+
+      if (state.blue.r === r && state.blue.c === c && E.isOnBoard(state, BLUE)) {
+        cell.classList.add('piece-blue');
+        cell.textContent = '你';
+      } else {
+        cell.classList.remove('piece-blue');
+      }
+    });
+
+    if (state.current === BLUE && !state.roundOver && !aiThinking) {
+      highlightLegalMoves();
+    } else {
+      cells.forEach((c) => c.classList.remove('highlight', 'capture'));
+    }
+
+    updateHUD();
+  }
+
+  function highlightLegalMoves() {
+    const moves = getLegalMoves(state, BLUE);
+    for (const m of moves) {
+      const cell = getCell(m.r, m.c);
+      if (!cell) continue;
+      if (m.capture) cell.classList.add('capture');
+      else cell.classList.add('highlight');
+    }
+  }
+
+  function getCell(r, c) {
+    return boardEl.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`);
+  }
+
+  function updateHUD() {
+    scoreEl.textContent = `比分  AI ${aiWins} — ${playerWins}  你`;
+    btnNext.hidden = !state.roundOver || state.matchOver;
+
+    if (state.matchOver) {
+      if (state.winner === BLUE) {
+        statusEl.textContent = '🎉 比赛结束！你赢了！';
+        statusEl.className = 'status win';
+      } else if (state.winner === RED) {
+        statusEl.textContent = '比赛结束，AI 获胜';
+        statusEl.className = 'status lose';
+      } else {
+        statusEl.textContent = `比赛结束，比分 ${aiWins} : ${playerWins} 平局`;
+        statusEl.className = 'status';
+      }
+      return;
+    }
+
+    if (state.roundOver) {
+      statusEl.textContent = state.winner === BLUE
+        ? `你赢得第 ${roundNumber} 局！`
+        : `AI 赢得第 ${roundNumber} 局`;
+      statusEl.className = 'status ' + (state.winner === BLUE ? 'win' : 'lose');
+      return;
+    }
+
+    if (aiThinking) {
+      statusEl.textContent = `第 ${roundNumber} 局 — AI 思考中…`;
+      statusEl.className = 'status ai-turn';
+      return;
+    }
+
+    if (state.current === BLUE) {
+      const extra = movesRemaining > 1 ? `（须再走 ${movesRemaining} 步）` : '';
+      const atOpen = E.countVisited(state) === 0;
+      const firstHint = atOpen && roundNumber > 1 && lastRoundWinner === BLUE ? '（上局你胜，你先行）' : '';
+      statusEl.textContent = `第 ${roundNumber} 局 — 你的回合 ${firstHint}${extra}`.trim();
+      statusEl.className = 'status player-turn';
+    } else {
+      const atOpen = E.countVisited(state) === 0;
+      const firstHint = atOpen && roundNumber > 1 && lastRoundWinner === RED ? '（上局 AI 胜，AI 先行）' : '';
+      statusEl.textContent = `第 ${roundNumber} 局 — AI 回合 ${firstHint}`.trim();
+      statusEl.className = 'status ai-turn';
+    }
+  }
+
+  function updateTimer() {
+    if (state.roundOver || state.matchOver || aiThinking) {
+      timerEl.textContent = '';
+      return;
+    }
+    const rem = Math.max(0, TURN_LIMIT_SEC - Math.floor((Date.now() - turnStart) / 1000));
+    timerEl.textContent = `剩余 ${rem}s（本段须走 ${movesRemaining} 步）`;
+    if (rem === 0 && !aiThinking) {
+      handleTimeout();
+    }
+  }
+
+  function startTimer() {
+    turnStart = Date.now();
+    if (timerId) clearInterval(timerId);
+    timerId = setInterval(updateTimer, 500);
+    updateTimer();
+  }
+
+  function stopTimer() {
+    if (timerId) {
+      clearInterval(timerId);
+      timerId = null;
+    }
+  }
+
+  function handleTimeout() {
+    const side = state.current;
+    const key = side === RED ? 'red' : 'blue';
+    timeFaults[key]++;
+
+    if (timeFaults[key] === 1) {
+      movesRemaining = 2;
+      turnStart = Date.now();
+      alert('时间到！警告：接下来 60 秒内须完成 2 步。');
+      if (side === RED) scheduleAIMove();
+      return;
+    }
+
+    endRound(side === RED ? BLUE : RED, 'timeout');
+  }
+
+  function getRoundFirstPlayer() {
+    if (roundNumber === 1) return BLUE;
+    return lastRoundWinner ?? BLUE;
+  }
+
+  function startNewRound() {
+    state = createInitialState();
+    const first = getRoundFirstPlayer();
+    state.current = first;
+    aiThinking = false;
+    movesRemaining = 1;
+    timeFaults = { red: 0, blue: 0 };
+    aiStatsEl.textContent = '';
+    AI.newRound();
+    startTimer();
+    render();
+
+    if (first === RED) {
+      scheduleAIMove();
+    }
+  }
+
+  function endRound(winner, reason) {
+    state.roundOver = true;
+    state.winner = winner;
+    lastRoundWinner = winner;
+    stopTimer();
+
+    if (winner === RED) aiWins++;
+    else playerWins++;
+
+    if (aiWins >= WINS_NEEDED || playerWins >= WINS_NEEDED || roundNumber >= TOTAL_ROUNDS) {
+      state.matchOver = true;
+      state.winner = aiWins > playerWins ? RED : playerWins > aiWins ? BLUE : null;
+      if (aiWins === playerWins) state.winner = null;
+    }
+
+    render();
+  }
+
+  function onCellClick(ev) {
+    if (state.roundOver || state.matchOver || state.current !== BLUE || aiThinking) return;
+
+    const r = +ev.currentTarget.dataset.r;
+    const c = +ev.currentTarget.dataset.c;
+    const moves = getLegalMoves(state, BLUE);
+    const move = moves.find((m) => m.r === r && m.c === c);
+    if (!move) return;
+
+    if (Date.now() - turnStart >= TURN_LIMIT_SEC * 1000) {
+      handleTimeout();
+      return;
+    }
+
+    playMove(BLUE, move);
+  }
+
+  function playMove(side, move) {
+    state = applyMove(state, side, move);
+
+    if (state.roundOver) {
+      endRound(state.winner);
+      return;
+    }
+
+    movesRemaining--;
+    if (movesRemaining > 0) {
+      render();
+      return;
+    }
+
+    state.current = side === BLUE ? RED : BLUE;
+    movesRemaining = 1;
+    startTimer();
+    render();
+
+    if (state.current === RED) {
+      scheduleAIMove();
+    }
+  }
+
+  function scheduleAIMove() {
+    aiThinking = true;
+    render();
+
+    const snapshot = cloneState(state);
+    setTimeout(() => {
+      const t0 = performance.now();
+      const move = AI.chooseMove(snapshot, { timeLimitMs: 1100, maxDepth: 18 });
+      const elapsed = (performance.now() - t0).toFixed(0);
+      const stats = AI.getLastSearchStats();
+
+      aiThinking = false;
+
+      if (!move) {
+        endRound(BLUE, 'no_moves');
+        aiStatsEl.textContent = '';
+        render();
+        return;
+      }
+
+      aiStatsEl.textContent = `AI 思考 ${elapsed}ms · 深度 ${stats.depth} · ${stats.nodes.toLocaleString()} 节点`;
+
+      if (Date.now() - turnStart >= TURN_LIMIT_SEC * 1000) {
+        handleTimeout();
+        return;
+      }
+
+      playMove(RED, move);
+    }, 80);
+  }
+
+  function cloneState(s) {
+    return {
+      board: s.board.slice(),
+      red: { ...s.red },
+      blue: { ...s.blue },
+      current: s.current,
+      roundOver: s.roundOver,
+      matchOver: s.matchOver,
+      winner: s.winner,
+      lastMove: s.lastMove,
+    };
+  }
+
+  function restartMatch() {
+    roundNumber = 1;
+    aiWins = 0;
+    playerWins = 0;
+    lastRoundWinner = null;
+    startNewRound();
+  }
+
+  function nextRound() {
+    if (state.matchOver) {
+      restartMatch();
+      return;
+    }
+    roundNumber++;
+    startNewRound();
+  }
+
+  btnRestart.addEventListener('click', restartMatch);
+  btnNext.addEventListener('click', nextRound);
+
+  buildBoardDOM();
+  restartMatch();
+})();
+
+  </script>
+</body>
+</html>
