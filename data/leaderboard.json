@@ -15,6 +15,14 @@
       "thinkTimeMs": 203572,
       "playedAt": "2026-10-13T20:59:52+08:00",
       "submittedAt": "2026-10-13T13:04:18.219Z"
+    },
+    {
+      "username": "Phier",
+      "playerWins": 0,
+      "aiWins": 4,
+      "thinkTimeMs": 175646,
+      "playedAt": "2026-10-13T21:34:01+08:00",
+      "submittedAt": "2026-10-13T13:37:10.428Z"
     }
   ]
 }
