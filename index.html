@@ -548,7 +548,7 @@ body {
 
       <section class="panel leaderboard-panel" id="leaderboard" aria-label="排行榜">
         <h2>排行榜 Top 10</h2>
-        <p class="leaderboard-note">所有完成的对局均参与排名：胜局多者优先；比分相同则思考时间更短者优先。</p>
+        <p class="leaderboard-note">所有完成的对局均参与排名：你的胜局多者优先；胜局相同则 AI 胜局更少者更优（如 4:2 优于 4:3）；仍相同则思考时间更短者优先。</p>
         <p class="leaderboard-network-hint">排行榜数据经 GitHub 与 Cloudflare 加载/提交。在中国大陆网络环境下，<strong>可能需要开启代理（VPN）</strong> 才能正常查看与录入；不挂代理时游戏仍可本地对战，但排行榜可能加载失败或无法上传成绩。</p>
         <div id="leaderboard-body" class="leaderboard-body">加载中…</div>
       </section>
@@ -1444,7 +1444,7 @@ window.THISAWAY_CONFIG = {
 
   function compareScore(a, b) {
     if (b.playerWins !== a.playerWins) return b.playerWins - a.playerWins;
-    if (b.aiWins !== a.aiWins) return b.aiWins - a.aiWins;
+    if (a.aiWins !== b.aiWins) return a.aiWins - b.aiWins;
     return a.thinkTimeMs - b.thinkTimeMs;
   }
 
