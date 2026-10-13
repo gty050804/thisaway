@@ -1612,9 +1612,38 @@ window.THISAWAY_CONFIG = {
     return `判罚  AI ${aiCard} · 你 ${youCard}`;
   }
 
+  function getLivePlayerThinkTimeMs() {
+    let ms = playerThinkTimeMs;
+    if (
+      state &&
+      !state.roundOver &&
+      !state.matchOver &&
+      !aiThinking &&
+      state.current === BLUE &&
+      turnStart
+    ) {
+      ms += Date.now() - turnStart;
+    }
+    return ms;
+  }
+
+  function formatLiveThinkTime(ms) {
+    const sec = Math.max(0, Math.floor(ms / 1000));
+    if (sec < 60) return `${sec} 秒`;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return s ? `${m} 分 ${s} 秒` : `${m} 分`;
+  }
+
+  function updateThinkTimeDisplay() {
+    if (!thinkTimeEl) return;
+    thinkTimeEl.textContent = `累计思考 ${formatLiveThinkTime(getLivePlayerThinkTimeMs())}`;
+  }
+
   function updateHUD() {
     scoreEl.textContent = `比分  AI ${aiWins} — ${playerWins}  你`;
     if (cardsEl) cardsEl.textContent = formatCards();
+    updateThinkTimeDisplay();
     btnNext.hidden = !state.roundOver || state.matchOver;
 
     if (state.matchOver) {
@@ -1740,8 +1769,8 @@ window.THISAWAY_CONFIG = {
     aiThinking = false;
     aiStatsEl.textContent = '';
     AI.newRound();
-    startTimer();
     render();
+    startTimer();
 
     if (first === RED) {
       scheduleAIMove();
