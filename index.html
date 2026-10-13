@@ -121,8 +121,91 @@ body {
   gap: 1rem;
 }
 
+.board-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(0.45rem, 2.5vw, 1rem);
+  width: 100%;
+  max-width: 640px;
+}
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  width: clamp(2.75rem, 11vw, 4rem);
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+.side-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  opacity: 0.9;
+}
+
+.side-ai .side-label {
+  color: var(--red-piece);
+}
+
+.side-player .side-label {
+  color: var(--blue-piece);
+}
+
+.side-score {
+  font-size: clamp(2.4rem, 10vw, 3.5rem);
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.side-score-ai {
+  color: var(--red-piece);
+  text-shadow: 0 0 24px rgba(232, 93, 106, 0.4);
+}
+
+.side-score-blue {
+  color: var(--blue-piece);
+  text-shadow: 0 0 24px rgba(91, 141, 239, 0.4);
+}
+
+.penalty-cards {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-height: 44px;
+  justify-content: flex-start;
+  margin-top: 0.15rem;
+}
+
+.penalty-card {
+  width: clamp(22px, 6vw, 30px);
+  height: clamp(30px, 8vw, 40px);
+  border-radius: 5px;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transform: rotate(-6deg);
+}
+
+.penalty-card.yellow {
+  background: linear-gradient(155deg, #fff176 0%, #f1c40f 45%, #d4a017 100%);
+  border: 2px solid #b8860b;
+}
+
+.penalty-card.red {
+  background: linear-gradient(155deg, #ff7675 0%, #e74c3c 45%, #c0392b 100%);
+  border: 2px solid #922b21;
+  transform: rotate(6deg);
+}
+
 .think-time {
-  width: min(94vw, 520px);
+  width: min(calc(100vw - 7rem), 520px);
   margin: -0.35rem 0 0;
   text-align: center;
   font-size: 0.88rem;
@@ -131,12 +214,18 @@ body {
   letter-spacing: 0.02em;
 }
 
+.board-row .board {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 520px;
+}
+
 .board {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   grid-template-rows: repeat(7, 1fr);
   gap: 4px;
-  width: min(94vw, 520px);
+  width: min(calc(100vw - 7rem), 520px);
   aspect-ratio: 1;
   padding: 8px;
   background: var(--surface2);
@@ -237,8 +326,6 @@ body {
   color: var(--red-piece);
 }
 
-.score,
-.cards,
 .timer,
 .ai-stats {
   margin: 0.2rem 0;
@@ -391,12 +478,22 @@ body {
 
     <main class="layout">
       <section class="game-area">
-        <div id="board" class="board" role="grid" aria-label="7乘7棋盘"></div>
+        <div class="board-row">
+          <aside class="side-panel side-ai" aria-label="AI 比分与判罚">
+            <span class="side-label">AI</span>
+            <div id="score-ai" class="side-score side-score-ai">0</div>
+            <div id="cards-ai" class="penalty-cards" aria-label="AI 判罚"></div>
+          </aside>
+          <div id="board" class="board" role="grid" aria-label="7乘7棋盘"></div>
+          <aside class="side-panel side-player" aria-label="你的比分与判罚">
+            <span class="side-label">你</span>
+            <div id="score-player" class="side-score side-score-blue">0</div>
+            <div id="cards-player" class="penalty-cards" aria-label="你的判罚"></div>
+          </aside>
+        </div>
         <p id="think-time" class="think-time" aria-live="polite">累计思考 0 秒</p>
         <div class="hud">
           <p id="status" class="status player-turn">加载中…</p>
-          <p id="score" class="score">比分  AI 0 — 0  你</p>
-          <p id="cards" class="cards">黄牌  AI 0 · 你 0</p>
           <p id="timer" class="timer"></p>
           <p id="ai-stats" class="ai-stats"></p>
           <div class="actions">
@@ -1531,8 +1628,10 @@ window.THISAWAY_CONFIG = {
   const boardEl = document.getElementById('board');
   const leaderboardBodyEl = document.getElementById('leaderboard-body');
   const statusEl = document.getElementById('status');
-  const scoreEl = document.getElementById('score');
-  const cardsEl = document.getElementById('cards');
+  const scoreAiEl = document.getElementById('score-ai');
+  const scorePlayerEl = document.getElementById('score-player');
+  const cardsAiEl = document.getElementById('cards-ai');
+  const cardsPlayerEl = document.getElementById('cards-player');
   const timerEl = document.getElementById('timer');
   const thinkTimeEl = document.getElementById('think-time');
   const aiStatsEl = document.getElementById('ai-stats');
@@ -1606,10 +1705,31 @@ window.THISAWAY_CONFIG = {
     return boardEl.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`);
   }
 
-  function formatCards() {
-    const aiCard = yellowCards.red >= 2 ? '红牌' : `黄牌 ${yellowCards.red}`;
-    const youCard = yellowCards.blue >= 2 ? '红牌' : `黄牌 ${yellowCards.blue}`;
-    return `判罚  AI ${aiCard} · 你 ${youCard}`;
+  function renderPenaltyCards(container, count) {
+    if (!container) return;
+    container.innerHTML = '';
+    if (count >= 2) {
+      const card = document.createElement('div');
+      card.className = 'penalty-card red';
+      card.title = '红牌（两黄变一红）';
+      card.setAttribute('aria-label', '红牌');
+      container.appendChild(card);
+      return;
+    }
+    if (count === 1) {
+      const card = document.createElement('div');
+      card.className = 'penalty-card yellow';
+      card.title = '黄牌';
+      card.setAttribute('aria-label', '黄牌');
+      container.appendChild(card);
+    }
+  }
+
+  function updateSidePanels() {
+    if (scoreAiEl) scoreAiEl.textContent = String(aiWins);
+    if (scorePlayerEl) scorePlayerEl.textContent = String(playerWins);
+    renderPenaltyCards(cardsAiEl, yellowCards.red);
+    renderPenaltyCards(cardsPlayerEl, yellowCards.blue);
   }
 
   function getLivePlayerThinkTimeMs() {
@@ -1641,8 +1761,7 @@ window.THISAWAY_CONFIG = {
   }
 
   function updateHUD() {
-    scoreEl.textContent = `比分  AI ${aiWins} — ${playerWins}  你`;
-    if (cardsEl) cardsEl.textContent = formatCards();
+    updateSidePanels();
     updateThinkTimeDisplay();
     btnNext.hidden = !state.roundOver || state.matchOver;
 
