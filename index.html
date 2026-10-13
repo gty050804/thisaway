@@ -407,8 +407,9 @@ body {
           <li>每步可选：<em>马走日</em>（±2,±1）或 <em>田字格</em>（±1,±1 对角）。</li>
           <li>不可走入已走过的格子；可落在对手位置<strong>直接吃子</strong>获胜。</li>
           <li>或将对手<strong>困毙</strong>（对手无合法步、你仍可走）亦获胜。</li>
+          <li>每段回合限时 60 秒。首次超时警告：须在接下来 60 秒内<strong>连走 2 步</strong>；再次超时本局判负。<strong>罚步的第 2 步不可吃子</strong>。</li>
         </ul>
-        <p id="hint-cells" class="hint">可落子格会高亮显示；红色边框为可吃 AI 的位置。</p>
+        <p id="hint-cells" class="hint">可落子格会高亮显示；红色边框为可吃 AI 的位置（罚步第 2 步时吃子格不会高亮）。</p>
       </section>
     </main>
 
@@ -1142,7 +1143,10 @@ body {
   function chooseMove(state, options = {}) {
     const limit = options.timeLimitMs ?? 550;
     const maxDepth = options.maxDepth ?? 10;
-    const allMoves = getLegalMoves(state, RED);
+    let allMoves = getLegalMoves(state, RED);
+    if (options.noCapture) {
+      allMoves = allMoves.filter((m) => !m.capture);
+    }
     if (!allMoves.length) return null;
 
     const { winNow, winNext, safe, fatal } = partitionMoves(state, RED, allMoves);
@@ -1574,7 +1578,7 @@ window.THISAWAY_CONFIG = {
   }
 
   function highlightLegalMoves() {
-    const moves = getLegalMoves(state, BLUE);
+    const moves = getLegalMovesForTurn(BLUE);
     for (const m of moves) {
       const cell = getCell(m.r, m.c);
       if (!cell) continue;
@@ -1620,7 +1624,8 @@ window.THISAWAY_CONFIG = {
     }
 
     if (state.current === BLUE) {
-      const extra = movesRemaining > 1 ? `（须再走 ${movesRemaining} 步）` : '';
+      let extra = movesRemaining > 1 ? `（须再走 ${movesRemaining} 步）` : '';
+      if (isPenaltySecondStep(BLUE)) extra += '（罚步第2步：不可吃子）';
       const atOpen = E.countVisited(state) === 0;
       const firstHint = atOpen && roundNumber > 1 && lastRoundWinner === BLUE ? '（上局你胜，你先行）' : '';
       statusEl.textContent = `第 ${roundNumber} 局 — 你的回合 ${firstHint}${extra}`.trim();
@@ -1659,6 +1664,20 @@ window.THISAWAY_CONFIG = {
     }
   }
 
+  /** 超时罚走 2 步时，第 2 步（movesRemaining===1 且已警告一次）不可吃子 */
+  function isPenaltySecondStep(side) {
+    const key = side === RED ? 'red' : 'blue';
+    return movesRemaining === 1 && timeFaults[key] === 1;
+  }
+
+  function getLegalMovesForTurn(side) {
+    let moves = getLegalMoves(state, side);
+    if (isPenaltySecondStep(side)) {
+      moves = moves.filter((m) => !m.capture);
+    }
+    return moves;
+  }
+
   function accruePlayerThinkTime() {
     if (state.current !== BLUE || state.roundOver || state.matchOver || aiThinking) return;
     if (!turnStart) return;
@@ -1675,7 +1694,7 @@ window.THISAWAY_CONFIG = {
     if (timeFaults[key] === 1) {
       movesRemaining = 2;
       turnStart = Date.now();
-      alert('时间到！警告：接下来 60 秒内须完成 2 步。');
+      alert('时间到！警告：接下来 60 秒内须完成 2 步；其中第 2 步不可吃子。');
       if (side === RED) scheduleAIMove();
       return;
     }
@@ -1750,7 +1769,7 @@ window.THISAWAY_CONFIG = {
 
     const r = +ev.currentTarget.dataset.r;
     const c = +ev.currentTarget.dataset.c;
-    const moves = getLegalMoves(state, BLUE);
+    const moves = getLegalMovesForTurn(BLUE);
     const move = moves.find((m) => m.r === r && m.c === c);
     if (!move) return;
 
@@ -1764,6 +1783,8 @@ window.THISAWAY_CONFIG = {
   }
 
   function playMove(side, move) {
+    if (isPenaltySecondStep(side) && move.capture) return;
+
     state = applyMove(state, side, move);
 
     if (state.roundOver) {
@@ -1792,11 +1813,18 @@ window.THISAWAY_CONFIG = {
     render();
 
     const snapshot = cloneState(state);
+    const legalForTurn = getLegalMovesForTurn(RED);
     setTimeout(() => {
       const t0 = performance.now();
       let move = null;
       try {
-        move = AI.chooseMove(snapshot, { timeLimitMs: 550, maxDepth: 10 });
+        if (legalForTurn.length) {
+          move = AI.chooseMove(snapshot, {
+            timeLimitMs: 550,
+            maxDepth: 10,
+            noCapture: isPenaltySecondStep(RED),
+          });
+        }
       } catch (err) {
         console.error('[Thisaway] AI error', err);
       } finally {
@@ -1806,7 +1834,7 @@ window.THISAWAY_CONFIG = {
       const elapsed = (performance.now() - t0).toFixed(0);
       const stats = AI.getLastSearchStats();
 
-      if (!move) {
+      if (!move || !legalForTurn.length) {
         endRound(BLUE, 'no_moves');
         aiStatsEl.textContent = '';
         render();
