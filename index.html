@@ -121,6 +121,16 @@ body {
   gap: 1rem;
 }
 
+.think-time {
+  width: min(94vw, 520px);
+  margin: -0.35rem 0 0;
+  text-align: center;
+  font-size: 0.88rem;
+  font-family: ui-monospace, monospace;
+  color: var(--blue-piece);
+  letter-spacing: 0.02em;
+}
+
 .board {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -382,6 +392,7 @@ body {
     <main class="layout">
       <section class="game-area">
         <div id="board" class="board" role="grid" aria-label="7乘7棋盘"></div>
+        <p id="think-time" class="think-time" aria-live="polite">累计思考 0 秒</p>
         <div class="hud">
           <p id="status" class="status player-turn">加载中…</p>
           <p id="score" class="score">比分  AI 0 — 0  你</p>
@@ -1523,6 +1534,7 @@ window.THISAWAY_CONFIG = {
   const scoreEl = document.getElementById('score');
   const cardsEl = document.getElementById('cards');
   const timerEl = document.getElementById('timer');
+  const thinkTimeEl = document.getElementById('think-time');
   const aiStatsEl = document.getElementById('ai-stats');
   const btnRestart = document.getElementById('btn-restart');
   const btnNext = document.getElementById('btn-next');
@@ -1653,6 +1665,7 @@ window.THISAWAY_CONFIG = {
     }
     const rem = Math.max(0, TURN_LIMIT_SEC - Math.floor((Date.now() - turnStart) / 1000));
     timerEl.textContent = `剩余 ${rem}s`;
+    updateThinkTimeDisplay();
     if (rem === 0 && !aiThinking) {
       handleTimeout();
     }
