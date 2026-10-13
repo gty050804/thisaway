@@ -1129,26 +1129,57 @@ body {
   </script>
   <script>
 /**
- * 部署阿里云 FC 后，将 apiBase 改为 HTTP 触发器地址（末尾不要 /）。
- * 留空则仅本地游玩，不提交成绩、不拉取排行榜。
+ * 排行榜配置（GitHub 模式，推荐）
+ *
+ * leaderboardUrl — 从 GitHub 读取 data/leaderboard.json（只读，可留空则仅在有 submitUrl 时用 Worker 拉榜）
+ * submitUrl      — Cloudflare Worker 地址，用于提交成绩并写入 GitHub（见 server/cloudflare/DEPLOY.md）
+ *
+ * 留空 submitUrl 时仍可看榜（若配置了 leaderboardUrl），但不会自动提交成绩。
  */
 window.THISAWAY_CONFIG = {
+  leaderboardUrl: 'https://raw.githubusercontent.com/gty050804/thisaway/main/data/leaderboard.json',
+  submitUrl: '',
+
+  /** @deprecated 旧版阿里云 FC，与 GitHub 模式二选一 */
   apiBase: '',
 };
 
   </script>
   <script>
 /**
- * Thisaway 排行榜 — 与阿里云 FC API 通信
+ * Thisaway 排行榜
+ * - GitHub 模式：读 raw JSON，写 Cloudflare Worker → commit 到仓库
+ * - 兼容旧版阿里云 FC（apiBase）
  */
 (function (global) {
   'use strict';
 
   const USERNAME_KEY = 'thisaway_username';
 
+  function getConfig() {
+    return global.THISAWAY_CONFIG || {};
+  }
+
   function getApiBase() {
-    const cfg = global.THISAWAY_CONFIG || {};
-    return (cfg.apiBase || '').replace(/\/$/, '');
+    return (getConfig().apiBase || '').replace(/\/$/, '');
+  }
+
+  function getSubmitUrl() {
+    return (getConfig().submitUrl || '').replace(/\/$/, '');
+  }
+
+  function getLeaderboardUrl() {
+    return getConfig().leaderboardUrl || '';
+  }
+
+  function isConfigured() {
+    return !!(getLeaderboardUrl() || getSubmitUrl() || getApiBase());
+  }
+
+  function compareScore(a, b) {
+    if (b.playerWins !== a.playerWins) return b.playerWins - a.playerWins;
+    if (b.aiWins !== a.aiWins) return b.aiWins - a.aiWins;
+    return a.thinkTimeMs - b.thinkTimeMs;
   }
 
   function getUsername() {
@@ -1205,31 +1236,29 @@ window.THISAWAY_CONFIG = {
     return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}+08:00`;
   }
 
-  async function submitScore(payload) {
-    const base = getApiBase();
-    if (!base) return { ok: false, skipped: true };
+  async function fetchFromGitHub(limit) {
+    const url = getLeaderboardUrl();
+    if (!url) return [];
 
-    const username = getUsername();
-    if (!username) return { ok: false, skipped: true };
-    const body = {
-      username,
-      playerWins: payload.playerWins,
-      aiWins: payload.aiWins,
-      thinkTimeMs: payload.thinkTimeMs,
-      playedAt: payload.playedAt || beijingISO(),
-    };
-
-    const res = await fetch(`${base}/scores`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `提交失败 (${res.status})`);
-    return data;
+    const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`GitHub 读取失败 (${res.status})`);
+    const data = await res.json();
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    entries.sort(compareScore);
+    return entries.slice(0, limit || 10);
   }
 
-  async function fetchTop(limit) {
+  async function fetchFromWorker(limit) {
+    const base = getSubmitUrl();
+    if (!base) return [];
+
+    const res = await fetch(`${base}/leaderboard?limit=${limit || 10}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `加载失败 (${res.status})`);
+    return data.items || [];
+  }
+
+  async function fetchFromAliyun(limit) {
     const base = getApiBase();
     if (!base) return [];
 
@@ -1239,10 +1268,49 @@ window.THISAWAY_CONFIG = {
     return data.items || [];
   }
 
+  async function fetchTop(limit) {
+    if (getLeaderboardUrl()) {
+      try {
+        return await fetchFromGitHub(limit);
+      } catch (err) {
+        if (getSubmitUrl()) return fetchFromWorker(limit);
+        throw err;
+      }
+    }
+    if (getSubmitUrl()) return fetchFromWorker(limit);
+    return fetchFromAliyun(limit);
+  }
+
+  async function submitScore(payload) {
+    const username = getUsername();
+    if (!username) return { ok: false, skipped: true };
+
+    const body = {
+      username,
+      playerWins: payload.playerWins,
+      aiWins: payload.aiWins,
+      thinkTimeMs: payload.thinkTimeMs,
+      playedAt: payload.playedAt || beijingISO(),
+    };
+
+    const submitBase = getSubmitUrl() || getApiBase();
+    if (!submitBase) return { ok: false, skipped: true };
+
+    const path = getSubmitUrl() ? '/scores' : '/scores';
+    const res = await fetch(`${submitBase}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `提交失败 (${res.status})`);
+    return data;
+  }
+
   function renderTable(container, items) {
     if (!container) return;
-    if (!getApiBase()) {
-      container.innerHTML = '<p class="leaderboard-empty">排行榜 API 未配置（见 js/config.js）</p>';
+    if (!isConfigured()) {
+      container.innerHTML = '<p class="leaderboard-empty">排行榜未配置（见 js/config.js）</p>';
       return;
     }
     if (!items.length) {
@@ -1279,7 +1347,7 @@ window.THISAWAY_CONFIG = {
 
   async function refreshUI(container) {
     if (!container) return;
-    if (!getApiBase()) {
+    if (!isConfigured()) {
       renderTable(container, []);
       return;
     }
