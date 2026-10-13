@@ -123,54 +123,90 @@ body {
 
 .board-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  gap: clamp(0.45rem, 2.5vw, 1rem);
+  gap: clamp(1.1rem, 5.5vw, 2.5rem);
   width: 100%;
-  max-width: 640px;
+  max-width: 760px;
 }
 
 .side-panel {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 0.45rem;
-  width: clamp(2.75rem, 11vw, 4rem);
+  justify-content: flex-start;
+  gap: 0.65rem;
+  width: clamp(3.25rem, 14vw, 5.5rem);
   flex-shrink: 0;
-  align-self: stretch;
+  padding-top: 8px;
+}
+
+.side-score-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  position: relative;
+}
+
+.side-score-wrap::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -0.35rem;
+  width: 1.75rem;
+  height: 2px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  opacity: 0.55;
+}
+
+.side-ai .side-score-wrap::after {
+  background: linear-gradient(90deg, transparent, var(--red-piece), transparent);
+}
+
+.side-player .side-score-wrap::after {
+  background: linear-gradient(90deg, transparent, var(--blue-piece), transparent);
 }
 
 .side-label {
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  opacity: 0.9;
+  font-size: clamp(0.62rem, 2.2vw, 0.72rem);
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  opacity: 0.72;
 }
 
 .side-ai .side-label {
-  color: var(--red-piece);
+  color: #ff9aa5;
 }
 
 .side-player .side-label {
-  color: var(--blue-piece);
+  color: #9ec0ff;
 }
 
 .side-score {
-  font-size: clamp(2.4rem, 10vw, 3.5rem);
-  font-weight: 800;
-  line-height: 1;
+  font-size: clamp(3.5rem, 16vw, 5.25rem);
+  font-weight: 900;
+  line-height: 0.88;
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.05em;
 }
 
 .side-score-ai {
-  color: var(--red-piece);
-  text-shadow: 0 0 24px rgba(232, 93, 106, 0.4);
+  background: linear-gradient(165deg, #ffb3bc 8%, var(--red-piece) 42%, #b83240 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 2px 14px rgba(232, 93, 106, 0.5));
 }
 
 .side-score-blue {
-  color: var(--blue-piece);
-  text-shadow: 0 0 24px rgba(91, 141, 239, 0.4);
+  background: linear-gradient(165deg, #aecbff 8%, var(--blue-piece) 42%, #3d6fd4 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 2px 14px rgba(91, 141, 239, 0.5));
 }
 
 .penalty-cards {
@@ -180,7 +216,7 @@ body {
   gap: 5px;
   min-height: 44px;
   justify-content: flex-start;
-  margin-top: 0.15rem;
+  margin-top: 0.35rem;
 }
 
 .penalty-card {
@@ -205,7 +241,7 @@ body {
 }
 
 .think-time {
-  width: min(calc(100vw - 7rem), 520px);
+  width: min(calc(100vw - 12rem), 520px);
   margin: -0.35rem 0 0;
   text-align: center;
   font-size: 0.88rem;
@@ -225,7 +261,7 @@ body {
   grid-template-columns: repeat(7, 1fr);
   grid-template-rows: repeat(7, 1fr);
   gap: 4px;
-  width: min(calc(100vw - 7rem), 520px);
+  width: min(calc(100vw - 12rem), 520px);
   aspect-ratio: 1;
   padding: 8px;
   background: var(--surface2);
@@ -480,14 +516,18 @@ body {
       <section class="game-area">
         <div class="board-row">
           <aside class="side-panel side-ai" aria-label="AI 比分与判罚">
-            <span class="side-label">AI</span>
-            <div id="score-ai" class="side-score side-score-ai">0</div>
+            <div class="side-score-wrap">
+              <span class="side-label">AI</span>
+              <div id="score-ai" class="side-score side-score-ai">0</div>
+            </div>
             <div id="cards-ai" class="penalty-cards" aria-label="AI 判罚"></div>
           </aside>
           <div id="board" class="board" role="grid" aria-label="7乘7棋盘"></div>
           <aside class="side-panel side-player" aria-label="你的比分与判罚">
-            <span class="side-label">你</span>
-            <div id="score-player" class="side-score side-score-blue">0</div>
+            <div class="side-score-wrap">
+              <span class="side-label">你</span>
+              <div id="score-player" class="side-score side-score-blue">0</div>
+            </div>
             <div id="cards-player" class="penalty-cards" aria-label="你的判罚"></div>
           </aside>
         </div>
