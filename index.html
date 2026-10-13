@@ -630,6 +630,7 @@ body {
   let aborted = false;
   let nodes = 0;
   let lastDepth = 0;
+  let flexMemo = null;
 
   function timedOut() {
     return deadline > 0 && performance.now() >= deadline;
@@ -818,16 +819,25 @@ body {
   /**
    * 着法灵活度：即时后备 + 多步可达空间 + 2 步分支（MATLAB 思路）
    */
-  function moveFlexibility(state, side, move) {
+  function moveFlexibility(state, side, move, full) {
+    const key = `${move.r},${move.c},${full ? 'f' : 'q'}`;
+    if (flexMemo && flexMemo.has(key)) return flexMemo.get(key);
+
     const next = applyMove(state, side, move);
     if (next.winner === side) return 10000;
     const m0 = mob(next, side);
     const r3 = reachableSpaces(next, side, 3);
-    const r4 = reachableSpaces(next, side, 4);
-    const r5 = reachableSpaces(next, side, 5);
-    const branch = twoStepBranchCount(state, side, move);
-    const open = opennessAt(move.r, move.c) * 3;
-    return m0 * 22 + r3 * 11 + r4 * 8 + r5 * 5 + branch * 6 + open * 4;
+    let score;
+    if (!full) {
+      score = m0 * 18 + r3 * 9 + opennessAt(move.r, move.c) * 3;
+    } else {
+      const r4 = reachableSpaces(next, side, 4);
+      const r5 = reachableSpaces(next, side, 5);
+      const branch = twoStepBranchCount(state, side, move);
+      score = m0 * 22 + r3 * 11 + r4 * 8 + r5 * 5 + branch * 6 + opennessAt(move.r, move.c) * 4;
+    }
+    if (flexMemo) flexMemo.set(key, score);
+    return score;
   }
 
   function evaluate(state) {
@@ -884,7 +894,9 @@ body {
     });
 
     let worst = Infinity;
-    for (const bm of blueMoves) {
+    const blueLimit = Math.min(blueMoves.length, 5);
+    for (let bi = 0; bi < blueLimit; bi++) {
+      const bm = blueMoves[bi];
       if (timedOut()) break;
       const afterBlue = applyMove(afterRed, BLUE, bm);
       if (afterBlue.winner === BLUE) return LOSE + 80;
@@ -895,14 +907,17 @@ body {
       const reachDrop = reachBefore - reachNow;
 
       let bestCont = -Infinity;
-      for (const rm of getLegalMoves(afterBlue, RED)) {
+      const redCont = getLegalMoves(afterBlue, RED);
+      for (let ri = 0; ri < redCont.length; ri++) {
+        if (timedOut()) break;
+        const rm = redCont[ri];
         if (hangsAfterMove(afterBlue, RED, rm)) continue;
         const afterRed2 = applyMove(afterBlue, RED, rm);
         if (afterRed2.winner === RED) {
           bestCont = WIN - 40;
           break;
         }
-        let cont = evaluate(afterRed2) + moveFlexibility(afterBlue, RED, rm) * 0.28;
+        let cont = evaluate(afterRed2) + moveFlexibility(afterBlue, RED, rm, false) * 0.28;
         if (mob(afterRed2, RED) <= 2) cont -= 65;
         if (reachableSpaces(afterRed2, RED, 4) <= 3) cont -= 45;
         if (bestCont < cont) bestCont = cont;
@@ -945,8 +960,8 @@ body {
       if (willBeCapturedNextTurn(state, side, a)) sa -= 600000;
       if (willBeCapturedNextTurn(state, side, b)) sb -= 600000;
 
-      sa += moveFlexibility(state, side, a) * 120;
-      sb += moveFlexibility(state, side, b) * 120;
+      sa += moveFlexibility(state, side, a, false) * 120;
+      sb += moveFlexibility(state, side, b, false) * 120;
       if (side === RED && isNearOpponent(state, side, a)) sa -= 8000;
       if (side === RED && isNearOpponent(state, side, b)) sb -= 8000;
 
@@ -1058,6 +1073,10 @@ body {
   }
 
   function scoreRootMove(state, move, depth) {
+    if (timedOut()) {
+      aborted = true;
+      return -Infinity;
+    }
     const kind = classifyMove(state, RED, move);
     if (kind === 'win_now') return WIN_NOW;
     if (kind === 'win_next') return WIN_NEXT;
@@ -1065,11 +1084,14 @@ body {
 
     const next = applyMove(state, RED, move);
     const searchScore = -negamax(next, depth - 1, -Infinity, Infinity, BLUE, 1);
-    const flex = moveFlexibility(state, RED, move) * W.flex;
+    const flex = moveFlexibility(state, RED, move, true) * W.flex;
 
-    const redMobBefore = mob(state, RED);
-    const reachBefore = reachableSpaces(state, RED, 4);
-    const pessimistic = worstLineAfterRedMove(next, redMobBefore, reachBefore);
+    let pessimistic = searchScore;
+    if (depth >= 3 && !timedOut()) {
+      const redMobBefore = mob(state, RED);
+      const reachBefore = reachableSpaces(state, RED, 4);
+      pessimistic = worstLineAfterRedMove(next, redMobBefore, reachBefore);
+    }
 
     const tactical = searchScore * 0.55 + pessimistic * 0.45;
     let total = tactical + flex;
@@ -1116,8 +1138,8 @@ body {
   }
 
   function chooseMove(state, options = {}) {
-    const limit = options.timeLimitMs ?? 1100;
-    const maxDepth = options.maxDepth ?? 18;
+    const limit = options.timeLimitMs ?? 550;
+    const maxDepth = options.maxDepth ?? 10;
     const allMoves = getLegalMoves(state, RED);
     if (!allMoves.length) return null;
 
@@ -1133,13 +1155,19 @@ body {
     aborted = false;
     nodes = 0;
     lastDepth = 0;
+    flexMemo = new Map();
 
     let lastScored = searchPool.map((move) => ({ move, score: -Infinity }));
+    let rootPool = searchPool;
 
     for (let depth = 1; depth <= maxDepth; depth++) {
       if (timedOut()) break;
+      if (depth > 4 && lastScored.some((x) => x.score > FATAL + 100)) {
+        const ranked = lastScored.slice().sort((a, b) => b.score - a.score);
+        rootPool = ranked.slice(0, Math.min(5, ranked.length)).map((x) => x.move);
+      }
       const hint = tt.get(hashState(state, RED));
-      const ordered = sortMoves(searchPool.slice(), state, RED, state.red, hint && hint.best);
+      const ordered = sortMoves(rootPool.slice(), state, RED, state.red, hint && hint.best);
       const roundScores = [];
       let finished = true;
 
@@ -1164,7 +1192,7 @@ body {
     if (!lastScored.some((x) => x.score > FATAL + 100)) {
       lastScored = searchPool.map((move) => ({
         move,
-        score: moveFlexibility(state, RED, move),
+        score: moveFlexibility(state, RED, move, false),
       }));
     }
 
@@ -1174,10 +1202,10 @@ body {
 
     if (survivable.length) {
       if (chosen && !willBeCapturedNextTurn(state, RED, chosen)) return chosen;
-      const flexMoves = survivable.slice().sort((a, b) => moveFlexibility(state, RED, b) - moveFlexibility(state, RED, a));
+      const flexMoves = survivable.slice().sort((a, b) => moveFlexibility(state, RED, b, false) - moveFlexibility(state, RED, a, false));
       const flexPool = flexMoves.slice(0, Math.min(4, flexMoves.length));
       if (flexPool.length > 1 && visited < 20) {
-        const w = flexPool.map((m) => moveFlexibility(state, RED, m));
+        const w = flexPool.map((m) => moveFlexibility(state, RED, m, false));
         const sum = w.reduce((a, b) => a + b, 0);
         let r = Math.random() * sum;
         for (let i = 0; i < flexPool.length; i++) {
@@ -1194,6 +1222,7 @@ body {
   function newRound() {
     tt.clear();
     history.fill(0);
+    flexMemo = null;
     zobristTurn = (Math.random() * 0x7fffffff) | 0;
   }
 
@@ -1763,7 +1792,7 @@ window.THISAWAY_CONFIG = {
     const snapshot = cloneState(state);
     setTimeout(() => {
       const t0 = performance.now();
-      const move = AI.chooseMove(snapshot, { timeLimitMs: 1100, maxDepth: 18 });
+      const move = AI.chooseMove(snapshot, { timeLimitMs: 550, maxDepth: 10 });
       const elapsed = (performance.now() - t0).toFixed(0);
       const stats = AI.getLastSearchStats();
 
