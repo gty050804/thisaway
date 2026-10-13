@@ -4,11 +4,20 @@
 
 在线游玩：**https://gty050804.github.io/thisaway/**
 
-## 部署
+## 首次开启 GitHub Pages（必做，否则 404）
 
-1. 在本目录执行 `git push` 到 `https://github.com/gty050804/thisaway.git`
-2. GitHub 仓库 → Settings → Pages → Source 选 **Deploy from a branch**
-3. Branch 选 **main**，Folder 选 **/ (root)**，保存
-4. 等待 1–2 分钟，访问 https://gty050804.github.io/thisaway/
+打开 Settings → Pages：https://github.com/gty050804/thisaway/settings/pages
 
-更新游戏：运行 `python scripts/prepare_thisaway_deploy.py` 后重新 push 本目录。
+任选一种 Source：
+
+**方式 1（推荐）GitHub Actions**
+- Source 选 **GitHub Actions**
+- push 后 Actions 会自动部署
+
+**方式 2 Deploy from a branch**
+- Source 选 **Deploy from a branch**
+- Branch **main**，Folder **/ (root)**
+
+保存后等 1–3 分钟访问 https://gty050804.github.io/thisaway/
+
+更新游戏：`python scripts/prepare_thisaway_deploy.py` 后 push 本目录。

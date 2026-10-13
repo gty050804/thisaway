@@ -286,6 +286,65 @@ body {
   color: var(--accent);
 }
 
+.leaderboard-note {
+  margin: 0 0 0.85rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.leaderboard-body {
+  overflow-x: auto;
+}
+
+.leaderboard-empty {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--muted);
+  text-align: center;
+  padding: 0.5rem 0;
+}
+
+.leaderboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.leaderboard-table th,
+.leaderboard-table td {
+  padding: 0.45rem 0.35rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.leaderboard-table th {
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.leaderboard-table td:first-child,
+.leaderboard-table th:first-child {
+  width: 2rem;
+  text-align: center;
+  color: var(--muted);
+}
+
+.leaderboard-table tbody tr:nth-child(1) td:first-child {
+  color: #ffd700;
+  font-weight: 700;
+}
+
+.leaderboard-table tbody tr:nth-child(2) td:first-child {
+  color: #c0c0c0;
+  font-weight: 700;
+}
+
+.leaderboard-table tbody tr:nth-child(3) td:first-child {
+  color: #cd7f32;
+  font-weight: 700;
+}
+
   </style>
 </head>
 <body>
@@ -308,6 +367,12 @@ body {
             <button type="button" id="btn-next" class="btn btn-primary" hidden>下一局</button>
           </div>
         </div>
+      </section>
+
+      <section class="panel leaderboard-panel" id="leaderboard" aria-label="排行榜">
+        <h2>排行榜 Top 10</h2>
+        <p class="leaderboard-note">所有完成的对局均参与排名：胜局多者优先；比分相同则思考时间更短者优先。</p>
+        <div id="leaderboard-body" class="leaderboard-body">加载中…</div>
       </section>
 
       <section class="panel rules" aria-label="游戏规则">
@@ -1064,6 +1129,182 @@ body {
   </script>
   <script>
 /**
+ * 部署阿里云 FC 后，将 apiBase 改为 HTTP 触发器地址（末尾不要 /）。
+ * 留空则仅本地游玩，不提交成绩、不拉取排行榜。
+ */
+window.THISAWAY_CONFIG = {
+  apiBase: '',
+};
+
+  </script>
+  <script>
+/**
+ * Thisaway 排行榜 — 与阿里云 FC API 通信
+ */
+(function (global) {
+  'use strict';
+
+  const USERNAME_KEY = 'thisaway_username';
+
+  function getApiBase() {
+    const cfg = global.THISAWAY_CONFIG || {};
+    return (cfg.apiBase || '').replace(/\/$/, '');
+  }
+
+  function getUsername() {
+    let name = localStorage.getItem(USERNAME_KEY);
+    if (name) return name.trim();
+    name = (prompt('请输入昵称（将显示在排行榜，2–16 字）', '') || '').trim();
+    if (!name) return null;
+    if (name.length < 2 || name.length > 16) {
+      alert('昵称需 2–16 个字符');
+      return getUsername();
+    }
+    localStorage.setItem(USERNAME_KEY, name);
+    return name;
+  }
+
+  function formatThinkTime(ms) {
+    const sec = Math.max(0, Math.round(ms / 1000));
+    if (sec < 60) return `${sec} 秒`;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return s ? `${m} 分 ${s} 秒` : `${m} 分`;
+  }
+
+  function formatPlayedAt(isoOrStr) {
+    try {
+      const d = new Date(isoOrStr);
+      return d.toLocaleString('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+    } catch {
+      return String(isoOrStr);
+    }
+  }
+
+  function beijingISO(date) {
+    const d = date || new Date();
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(d);
+    const get = (type) => parts.find((p) => p.type === type).value;
+    return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}+08:00`;
+  }
+
+  async function submitScore(payload) {
+    const base = getApiBase();
+    if (!base) return { ok: false, skipped: true };
+
+    const username = getUsername();
+    if (!username) return { ok: false, skipped: true };
+    const body = {
+      username,
+      playerWins: payload.playerWins,
+      aiWins: payload.aiWins,
+      thinkTimeMs: payload.thinkTimeMs,
+      playedAt: payload.playedAt || beijingISO(),
+    };
+
+    const res = await fetch(`${base}/scores`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `提交失败 (${res.status})`);
+    return data;
+  }
+
+  async function fetchTop(limit) {
+    const base = getApiBase();
+    if (!base) return [];
+
+    const res = await fetch(`${base}/leaderboard?limit=${limit || 10}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `加载失败 (${res.status})`);
+    return data.items || [];
+  }
+
+  function renderTable(container, items) {
+    if (!container) return;
+    if (!getApiBase()) {
+      container.innerHTML = '<p class="leaderboard-empty">排行榜 API 未配置（见 js/config.js）</p>';
+      return;
+    }
+    if (!items.length) {
+      container.innerHTML = '<p class="leaderboard-empty">暂无记录，完成一局比赛即可上榜</p>';
+      return;
+    }
+
+    const rows = items.map((row, i) => {
+      const score = `${row.playerWins}:${row.aiWins}`;
+      return `<tr>
+        <td>${i + 1}</td>
+        <td>${escapeHtml(row.username)}</td>
+        <td>${score}</td>
+        <td>${formatThinkTime(row.thinkTimeMs)}</td>
+        <td>${formatPlayedAt(row.playedAt)}</td>
+      </tr>`;
+    }).join('');
+
+    container.innerHTML = `<table class="leaderboard-table">
+      <thead><tr>
+        <th>#</th><th>用户名</th><th>比分</th><th>思考时间</th><th>游玩时间</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  async function refreshUI(container) {
+    if (!container) return;
+    if (!getApiBase()) {
+      renderTable(container, []);
+      return;
+    }
+    container.innerHTML = '<p class="leaderboard-empty">加载中…</p>';
+    try {
+      const items = await fetchTop(10);
+      renderTable(container, items);
+    } catch (err) {
+      container.innerHTML = `<p class="leaderboard-empty">排行榜加载失败：${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  global.ThisawayLeaderboard = {
+    getUsername,
+    submitScore,
+    fetchTop,
+    refreshUI,
+    formatThinkTime,
+    beijingISO,
+  };
+})(window);
+
+  </script>
+  <script>
+/**
  * Thisaway 网页版 — UI 与对局流程
  */
 (function () {
@@ -1089,8 +1330,12 @@ body {
   let timerId = null;
   let movesRemaining = 1;
   let timeFaults = { red: 0, blue: 0 };
+  let matchStartedAt = 0;
+  let playerThinkTimeMs = 0;
+  let scoreSubmitted = false;
 
   const boardEl = document.getElementById('board');
+  const leaderboardBodyEl = document.getElementById('leaderboard-body');
   const statusEl = document.getElementById('status');
   const scoreEl = document.getElementById('score');
   const timerEl = document.getElementById('timer');
@@ -1237,8 +1482,16 @@ body {
     }
   }
 
+  function accruePlayerThinkTime() {
+    if (state.current !== BLUE || state.roundOver || state.matchOver || aiThinking) return;
+    if (!turnStart) return;
+    playerThinkTimeMs += Date.now() - turnStart;
+    turnStart = Date.now();
+  }
+
   function handleTimeout() {
     const side = state.current;
+    if (side === BLUE) accruePlayerThinkTime();
     const key = side === RED ? 'red' : 'blue';
     timeFaults[key]++;
 
@@ -1288,9 +1541,31 @@ body {
       state.matchOver = true;
       state.winner = aiWins > playerWins ? RED : playerWins > aiWins ? BLUE : null;
       if (aiWins === playerWins) state.winner = null;
+      submitMatchScore();
     }
 
     render();
+  }
+
+  function submitMatchScore() {
+    if (scoreSubmitted || !window.ThisawayLeaderboard) return;
+    scoreSubmitted = true;
+    accruePlayerThinkTime();
+
+    ThisawayLeaderboard.submitScore({
+      playerWins,
+      aiWins,
+      thinkTimeMs: playerThinkTimeMs,
+      playedAt: ThisawayLeaderboard.beijingISO(new Date(matchStartedAt || Date.now())),
+    })
+      .then((res) => {
+        if (res.skipped) return;
+        return ThisawayLeaderboard.refreshUI(leaderboardBodyEl);
+      })
+      .catch((err) => {
+        console.warn('[Thisaway] score submit failed', err);
+        scoreSubmitted = false;
+      });
   }
 
   function onCellClick(ev) {
@@ -1307,6 +1582,7 @@ body {
       return;
     }
 
+    accruePlayerThinkTime();
     playMove(BLUE, move);
   }
 
@@ -1383,6 +1659,9 @@ body {
     aiWins = 0;
     playerWins = 0;
     lastRoundWinner = null;
+    matchStartedAt = Date.now();
+    playerThinkTimeMs = 0;
+    scoreSubmitted = false;
     startNewRound();
   }
 
@@ -1399,6 +1678,9 @@ body {
   btnNext.addEventListener('click', nextRound);
 
   buildBoardDOM();
+  if (window.ThisawayLeaderboard) {
+    ThisawayLeaderboard.refreshUI(leaderboardBodyEl);
+  }
   restartMatch();
 })();
 
