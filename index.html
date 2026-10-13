@@ -292,6 +292,22 @@ body {
   color: var(--muted);
 }
 
+.leaderboard-network-hint {
+  margin: 0 0 0.85rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+  background: rgba(254, 150, 172, 0.08);
+  border: 1px solid rgba(254, 150, 172, 0.22);
+  border-radius: 8px;
+}
+
+.leaderboard-network-hint strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .leaderboard-body {
   overflow-x: auto;
 }
@@ -302,6 +318,14 @@ body {
   color: var(--muted);
   text-align: center;
   padding: 0.5rem 0;
+  line-height: 1.55;
+}
+
+.leaderboard-fail-hint {
+  display: inline-block;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--accent);
 }
 
 .leaderboard-table {
@@ -372,6 +396,7 @@ body {
       <section class="panel leaderboard-panel" id="leaderboard" aria-label="排行榜">
         <h2>排行榜 Top 10</h2>
         <p class="leaderboard-note">所有完成的对局均参与排名：胜局多者优先；比分相同则思考时间更短者优先。</p>
+        <p class="leaderboard-network-hint">排行榜数据经 GitHub 与 Cloudflare 加载/提交。在中国大陆网络环境下，<strong>可能需要开启代理（VPN）</strong> 才能正常查看与录入；不挂代理时游戏仍可本地对战，但排行榜可能加载失败或无法上传成绩。</p>
         <div id="leaderboard-body" class="leaderboard-body">加载中…</div>
       </section>
 
@@ -1356,7 +1381,7 @@ window.THISAWAY_CONFIG = {
       const items = await fetchTop(10);
       renderTable(container, items);
     } catch (err) {
-      container.innerHTML = `<p class="leaderboard-empty">排行榜加载失败：${escapeHtml(err.message)}</p>`;
+      container.innerHTML = `<p class="leaderboard-empty">排行榜加载失败：${escapeHtml(err.message)}<br><span class="leaderboard-fail-hint">若在中国大陆，请尝试开启代理（VPN）后刷新页面。</span></p>`;
     }
   }
 
