@@ -602,8 +602,8 @@ body {
   const WIN_NOW = WIN;
   const WIN_NEXT = WIN - 1;
 
-  /** 对应 Master.m：depth_weight / node_weight 比例 */
-  const W = { depth: 6.5, node: 3.8, control: 1.2, defense: 2.2, trap: 18, squeeze: 22, flex: 1.0 };
+  /** 对应 Master.m：depth_weight / node_weight 比例（提高远见/后备，略降纯防守） */
+  const W = { depth: 9.5, node: 7.0, control: 0.85, defense: 1.4, trap: 18, squeeze: 32, flex: 3.2 };
 
   let zobristCell;
   let zobristRed;
@@ -711,6 +711,21 @@ body {
     return { winNow, winNext, safe, fatal };
   }
 
+  /** MATLAB：除非无路可走，否则不主动走到玩家马步/对角邻格 */
+  function isNearOpponent(state, side, move) {
+    const oppSide = E.opponent(side);
+    if (!isOnBoard(state, oppSide)) return false;
+    const opp = getSidePos(state, oppSide);
+    const dr = Math.abs(move.r - opp.r);
+    const dc = Math.abs(move.c - opp.c);
+    return (dr === 1 && dc === 1) || (dr === 1 && dc === 2) || (dr === 2 && dc === 1);
+  }
+
+  function preferNotNearPlayer(state, side, moves) {
+    const far = moves.filter((m) => !isNearOpponent(state, side, m));
+    return far.length ? far : moves;
+  }
+
   function canCapture(state, side) {
     const opp = E.opponent(side);
     if (!isOnBoard(state, opp)) return false;
@@ -812,7 +827,7 @@ body {
     const r5 = reachableSpaces(next, side, 5);
     const branch = twoStepBranchCount(state, side, move);
     const open = opennessAt(move.r, move.c) * 3;
-    return m0 * 14 + r3 * 6 + r4 * 4 + r5 * 2 + branch * 3.5 + open;
+    return m0 * 22 + r3 * 11 + r4 * 8 + r5 * 5 + branch * 6 + open * 4;
   }
 
   function evaluate(state) {
@@ -840,8 +855,7 @@ body {
     const blueSafe = safeMoveRatio(state, BLUE);
     const defTerm = (redSafe - blueSafe) * W.defense * 35;
 
-    const me = getSidePos(state, RED);
-    const dangerTerm = canCapture(state, BLUE) ? -120 : 0;
+    const dangerTerm = canCapture(state, BLUE) ? -90 : 0;
 
     let trapTerm = 0;
     if (blueM.length <= 2 && redM.length > blueM.length) trapTerm += (3 - blueM.length) * W.trap;
@@ -888,17 +902,21 @@ body {
           bestCont = WIN - 40;
           break;
         }
-        let cont = evaluate(afterRed2) + moveFlexibility(afterBlue, RED, rm) * 0.15;
-        if (mob(afterRed2, RED) <= 2) cont -= 50;
+        let cont = evaluate(afterRed2) + moveFlexibility(afterBlue, RED, rm) * 0.28;
+        if (mob(afterRed2, RED) <= 2) cont -= 65;
+        if (reachableSpaces(afterRed2, RED, 4) <= 3) cont -= 45;
         if (bestCont < cont) bestCont = cont;
       }
       if (bestCont === -Infinity) bestCont = LOSE + 60;
 
       let line = bestCont;
       if (mobDrop >= 1) line -= W.squeeze * mobDrop;
-      if (mobDrop >= 3) line -= 55;
-      if (redMobNow <= 2) line -= 45;
-      if (reachDrop >= 3) line -= 35;
+      if (mobDrop >= 2) line -= 35;
+      if (mobDrop >= 3) line -= 70;
+      if (redMobNow <= 2) line -= 60;
+      if (redMobNow <= 1) line -= 90;
+      if (reachDrop >= 2) line -= 40;
+      if (reachDrop >= 3) line -= 65;
 
       if (line < worst) worst = line;
     }
@@ -927,8 +945,10 @@ body {
       if (willBeCapturedNextTurn(state, side, a)) sa -= 600000;
       if (willBeCapturedNextTurn(state, side, b)) sb -= 600000;
 
-      sa += moveFlexibility(state, side, a) * 80;
-      sb += moveFlexibility(state, side, b) * 80;
+      sa += moveFlexibility(state, side, a) * 120;
+      sb += moveFlexibility(state, side, b) * 120;
+      if (side === RED && isNearOpponent(state, side, a)) sa -= 8000;
+      if (side === RED && isNearOpponent(state, side, b)) sb -= 8000;
 
       if (pv) {
         if (a.r === pv.r && a.c === pv.c) sa += 50000;
@@ -1051,14 +1071,34 @@ body {
     const reachBefore = reachableSpaces(state, RED, 4);
     const pessimistic = worstLineAfterRedMove(next, redMobBefore, reachBefore);
 
-    const tactical = searchScore * 0.62 + pessimistic * 0.38;
-    return tactical + flex;
+    const tactical = searchScore * 0.55 + pessimistic * 0.45;
+    let total = tactical + flex;
+    const altFar = preferNotNearPlayer(state, RED, getLegalMoves(state, RED).filter((m) => m.r !== move.r || m.c !== move.c));
+    if (isNearOpponent(state, RED, move) && altFar.length) total -= 120;
+    return total;
   }
 
-  function pickBestByScore(scored) {
+  /** 在高分候选中加权随机（MATLAB 早期 to_be_selected.^2 + rand） */
+  function pickStochastic(scored, visited) {
     if (!scored.length) return null;
-    const max = Math.max(...scored.map((x) => x.score));
-    const pool = scored.filter((x) => x.score >= max - 0.5);
+    const sorted = scored.slice().sort((a, b) => b.score - a.score);
+    const max = sorted[0].score;
+    const spread = Math.max(1, max - sorted[sorted.length - 1].score);
+    const band = visited < 12 ? spread * 0.35 : visited < 22 ? spread * 0.22 : spread * 0.12;
+    const topK = visited < 12 ? 6 : visited < 22 ? 4 : 3;
+    let pool = sorted.filter((x) => x.score >= max - band).slice(0, topK);
+    if (pool.length <= 1) return pool[0].move;
+
+    const minS = pool[pool.length - 1].score;
+    const range = max - minS || 1;
+    const power = visited < 14 ? 2.2 : 1.6;
+    const weights = pool.map((x) => Math.pow((x.score - minS) / range + 0.08, power));
+    const sum = weights.reduce((a, b) => a + b, 0);
+    let r = Math.random() * sum;
+    for (let i = 0; i < pool.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return pool[i].move;
+    }
     return pool[0].move;
   }
 
@@ -1086,7 +1126,8 @@ body {
     if (winNext.length) return winNext[0];
 
     const notCaptured = filterNotCaptured(state, RED, safe.length ? safe : allMoves);
-    const searchPool = notCaptured.length ? notCaptured : fatal.length ? fatal : allMoves;
+    let searchPool = notCaptured.length ? notCaptured : fatal.length ? fatal : allMoves;
+    searchPool = preferNotNearPlayer(state, RED, searchPool);
 
     deadline = performance.now() + limit;
     aborted = false;
@@ -1127,12 +1168,24 @@ body {
       }));
     }
 
-    let chosen = pickBestByScore(lastScored);
-    const survivable = filterNotCaptured(state, RED, allMoves);
+    const visited = countVisited(state);
+    let chosen = pickStochastic(lastScored, visited);
+    const survivable = preferNotNearPlayer(state, RED, filterNotCaptured(state, RED, allMoves));
 
     if (survivable.length) {
       if (chosen && !willBeCapturedNextTurn(state, RED, chosen)) return chosen;
-      return pickBestFlexible(state, survivable);
+      const flexMoves = survivable.slice().sort((a, b) => moveFlexibility(state, RED, b) - moveFlexibility(state, RED, a));
+      const flexPool = flexMoves.slice(0, Math.min(4, flexMoves.length));
+      if (flexPool.length > 1 && visited < 20) {
+        const w = flexPool.map((m) => moveFlexibility(state, RED, m));
+        const sum = w.reduce((a, b) => a + b, 0);
+        let r = Math.random() * sum;
+        for (let i = 0; i < flexPool.length; i++) {
+          r -= w[i];
+          if (r <= 0) return flexPool[i];
+        }
+      }
+      return flexPool[0];
     }
 
     return chosen || searchPool[0];
