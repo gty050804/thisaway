@@ -42,7 +42,7 @@ body {
 }
 
 .page {
-  max-width: 960px;
+  max-width: 640px;
   margin: 0 auto;
   padding: 1.5rem 1rem 2rem;
 }
@@ -70,15 +70,9 @@ body {
 }
 
 .layout {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 1.5rem;
-}
-
-@media (min-width: 768px) {
-  .layout {
-    grid-template-columns: 1fr 340px;
-    align-items: start;
-  }
 }
 
 .panel {
@@ -131,8 +125,8 @@ body {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   grid-template-rows: repeat(7, 1fr);
-  gap: 3px;
-  width: min(92vw, 340px);
+  gap: 4px;
+  width: min(94vw, 520px);
   aspect-ratio: 1;
   padding: 8px;
   background: var(--surface2);
@@ -207,7 +201,7 @@ body {
 }
 
 .hud {
-  width: min(92vw, 340px);
+  width: min(94vw, 520px);
   text-align: center;
 }
 
@@ -302,17 +296,6 @@ body {
     </header>
 
     <main class="layout">
-      <section class="panel rules" aria-label="游戏规则">
-        <h2>规则</h2>
-        <ul>
-          <li>双方自对角出发（你：右下，AI：左上）。<strong>第一局你先行</strong>；从第二局起，<strong>上一局获胜方先手</strong>。</li>
-          <li>每步可选：<em>马走日</em>（±2,±1）或 <em>田字格</em>（±1,±1 对角）。</li>
-          <li>不可走入已走过的格子；可落在对手位置<strong>直接吃子</strong>获胜。</li>
-          <li>或将对手<strong>困毙</strong>（对手无合法步、你仍可走）亦获胜。</li>
-        </ul>
-        <p id="hint-cells" class="hint">可落子格会高亮显示；红色边框为可吃 AI 的位置。</p>
-      </section>
-
       <section class="game-area">
         <div id="board" class="board" role="grid" aria-label="7乘7棋盘"></div>
         <div class="hud">
@@ -325,6 +308,17 @@ body {
             <button type="button" id="btn-next" class="btn btn-primary" hidden>下一局</button>
           </div>
         </div>
+      </section>
+
+      <section class="panel rules" aria-label="游戏规则">
+        <h2>规则</h2>
+        <ul>
+          <li>双方自对角出发（你：右下，AI：左上）。<strong>第一局你先行</strong>；从第二局起，<strong>上一局获胜方先手</strong>。</li>
+          <li>每步可选：<em>马走日</em>（±2,±1）或 <em>田字格</em>（±1,±1 对角）。</li>
+          <li>不可走入已走过的格子；可落在对手位置<strong>直接吃子</strong>获胜。</li>
+          <li>或将对手<strong>困毙</strong>（对手无合法步、你仍可走）亦获胜。</li>
+        </ul>
+        <p id="hint-cells" class="hint">可落子格会高亮显示；红色边框为可吃 AI 的位置。</p>
       </section>
     </main>
 
