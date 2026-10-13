@@ -871,6 +871,7 @@ body {
     if (blueM.length <= 2 && redM.length > blueM.length) trapTerm += (3 - blueM.length) * W.trap;
     if (redM.length <= 2 && blueM.length > redM.length) trapTerm -= (3 - redM.length) * W.trap;
 
+    const me = getSidePos(state, RED);
     const redOpen = opennessAt(me.r, me.c);
     const bluePos = getSidePos(state, BLUE);
     const openTerm = (redOpen - opennessAt(bluePos.r, bluePos.c)) * 2.5;
@@ -1109,7 +1110,8 @@ body {
     const band = visited < 12 ? spread * 0.35 : visited < 22 ? spread * 0.22 : spread * 0.12;
     const topK = visited < 12 ? 6 : visited < 22 ? 4 : 3;
     let pool = sorted.filter((x) => x.score >= max - band).slice(0, topK);
-    if (pool.length <= 1) return pool[0].move;
+    if (!pool.length) return sorted[0].move;
+    if (pool.length === 1) return pool[0].move;
 
     const minS = pool[pool.length - 1].score;
     const range = max - minS || 1;
@@ -1792,11 +1794,17 @@ window.THISAWAY_CONFIG = {
     const snapshot = cloneState(state);
     setTimeout(() => {
       const t0 = performance.now();
-      const move = AI.chooseMove(snapshot, { timeLimitMs: 550, maxDepth: 10 });
+      let move = null;
+      try {
+        move = AI.chooseMove(snapshot, { timeLimitMs: 550, maxDepth: 10 });
+      } catch (err) {
+        console.error('[Thisaway] AI error', err);
+      } finally {
+        aiThinking = false;
+      }
+
       const elapsed = (performance.now() - t0).toFixed(0);
       const stats = AI.getLastSearchStats();
-
-      aiThinking = false;
 
       if (!move) {
         endRound(BLUE, 'no_moves');
