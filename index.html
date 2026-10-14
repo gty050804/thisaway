@@ -756,8 +756,8 @@ body {
   const WIN_NOW = WIN;
   const WIN_NEXT = WIN - 1;
 
-  /** 对应 Master.m：depth_weight / node_weight 比例（提高远见/后备，略降纯防守） */
-  const W = { depth: 9.5, node: 7.0, control: 0.85, defense: 1.4, trap: 18, squeeze: 32, flex: 3.2 };
+  /** 对应 Master.m：depth_weight / node_weight；后期 phaseScale 会放大远见/后备 */
+  const W = { depth: 9.5, node: 7.0, control: 0.85, defense: 1.4, trap: 18, squeeze: 32, flex: 3.2, chain: 14 };
 
   let zobristCell;
   let zobristRed;
@@ -807,6 +807,64 @@ body {
 
   function mob(state, side) {
     return getLegalMoves(state, side).length;
+  }
+
+  /** 0=开局，1=残局；后期 depth/node/flex 权重更大 */
+  function phaseScale(visited) {
+    const t = Math.min(1, Math.max(0, (visited - 6) / 26));
+    return {
+      t,
+      depth: 1 + t * 3.2,
+      node: 1 + t * 2.4,
+      flex: 1 + t * 4.5,
+      chain: 1 + t * 5.5,
+      squeeze: 1 + t * 1.8,
+      tactical: 0.62 - t * 0.22,
+      pessimistic: 0.38 + t * 0.22,
+    };
+  }
+
+  /**
+   * 类似 MATLAB maxdepth_ai：从当前局面连续还能走多少步（不重复格子）
+   * 剪枝：每层只展开后备最多的若干着，避免爆炸
+   */
+  function maxChainDepth(state, side, maxPly) {
+    if (!isOnBoard(state, side)) return 0;
+    let best = 0;
+
+    function dfs(st, ply) {
+      if (ply > best) best = ply;
+      if (ply >= maxPly || timedOut()) return;
+
+      let moves = getLegalMoves(st, side);
+      moves.sort((a, b) => {
+        if (a.capture !== b.capture) return a.capture ? -1 : 1;
+        const na = applyMove(st, side, a);
+        const nb = applyMove(st, side, b);
+        return mob(nb, side) - mob(na, side);
+      });
+      const limit = ply >= 4 ? 4 : 6;
+      let expanded = 0;
+      for (const m of moves) {
+        if (expanded >= limit) break;
+        if (m.capture) {
+          best = Math.max(best, ply + 1);
+          continue;
+        }
+        if (hangsAfterMove(st, side, m)) continue;
+        const next = applyMove(st, side, m);
+        if (next.winner === side) {
+          best = Math.max(best, ply + 1);
+          continue;
+        }
+        if (next.winner === E.opponent(side)) continue;
+        expanded++;
+        dfs(next, ply + 1);
+      }
+    }
+
+    dfs(state, 0);
+    return best;
   }
 
   function willBeCapturedNextTurn(state, side, move) {
@@ -974,22 +1032,30 @@ body {
    * 着法灵活度：即时后备 + 多步可达空间 + 2 步分支（MATLAB 思路）
    */
   function moveFlexibility(state, side, move, full) {
-    const key = `${move.r},${move.c},${full ? 'f' : 'q'}`;
+    const visited = countVisited(state);
+    const phase = phaseScale(visited);
+    const key = `${move.r},${move.c},${full ? 'f' : 'q'},${visited}`;
     if (flexMemo && flexMemo.has(key)) return flexMemo.get(key);
 
     const next = applyMove(state, side, move);
     if (next.winner === side) return 10000;
     const m0 = mob(next, side);
     const r3 = reachableSpaces(next, side, 3);
-    let score;
+    const chain = full ? maxChainDepth(next, side, visited > 20 ? 10 : 8) : 0;
+    const chainW = 55 * phase.chain;
+    const mobW = (full ? 22 : 18) * phase.node;
+    const reachW = (full ? 11 : 9) * phase.depth;
+    let score = m0 * mobW + r3 * reachW + chain * chainW + opennessAt(move.r, move.c) * 3;
+    if (m0 <= 1) score -= 120 * phase.flex;
+    if (m0 === 0) score -= 400;
     if (!full) {
-      score = m0 * 18 + r3 * 9 + opennessAt(move.r, move.c) * 3;
-    } else {
-      const r4 = reachableSpaces(next, side, 4);
-      const r5 = reachableSpaces(next, side, 5);
-      const branch = twoStepBranchCount(state, side, move);
-      score = m0 * 22 + r3 * 11 + r4 * 8 + r5 * 5 + branch * 6 + opennessAt(move.r, move.c) * 4;
+      if (flexMemo) flexMemo.set(key, score);
+      return score;
     }
+    const r4 = reachableSpaces(next, side, 4);
+    const r5 = reachableSpaces(next, side, 5);
+    const branch = twoStepBranchCount(state, side, move);
+    score += r4 * 8 * phase.depth + r5 * 5 * phase.depth + branch * 6 * phase.node;
     if (flexMemo) flexMemo.set(key, score);
     return score;
   }
@@ -1006,13 +1072,14 @@ body {
     if (!redM.length && !blueM.length) return 0;
 
     const visited = countVisited(state);
-    const reachSteps = visited > 22 ? 5 : visited > 12 ? 4 : 3;
+    const phase = phaseScale(visited);
+    const reachSteps = visited > 22 ? 6 : visited > 12 ? 5 : 3;
 
     const redReach = reachableSpaces(state, RED, reachSteps);
     const blueReach = reachableSpaces(state, BLUE, reachSteps);
-    const depthTerm = (redReach - blueReach) * W.depth;
+    const depthTerm = (redReach - blueReach) * W.depth * phase.depth;
 
-    const nodeTerm = (redM.length - blueM.length) * W.node;
+    const nodeTerm = (redM.length - blueM.length) * W.node * phase.node;
     const ctrlTerm = (controlRatio(state, RED) - controlRatio(state, BLUE)) * W.control * 14;
 
     const redSafe = safeMoveRatio(state, RED);
@@ -1038,9 +1105,10 @@ body {
     return side === RED ? e : -e;
   }
 
-  function worstLineAfterRedMove(afterRed, redMobBefore, reachBefore) {
+  function worstLineAfterRedMove(afterRed, redMobBefore, reachBefore, phase) {
     const blueMoves = getLegalMoves(afterRed, BLUE);
     if (!blueMoves.length) return WIN - 60;
+    const ph = phase || phaseScale(countVisited(afterRed));
 
     blueMoves.sort((a, b) => {
       const na = applyMove(afterRed, BLUE, a);
@@ -1058,6 +1126,7 @@ body {
 
       const redMobNow = mob(afterBlue, RED);
       const reachNow = reachableSpaces(afterBlue, RED, 4);
+      const chainNow = maxChainDepth(afterBlue, RED, 8);
       const mobDrop = redMobBefore - redMobNow;
       const reachDrop = reachBefore - reachNow;
 
@@ -1080,13 +1149,17 @@ body {
       if (bestCont === -Infinity) bestCont = LOSE + 60;
 
       let line = bestCont;
-      if (mobDrop >= 1) line -= W.squeeze * mobDrop;
-      if (mobDrop >= 2) line -= 35;
-      if (mobDrop >= 3) line -= 70;
-      if (redMobNow <= 2) line -= 60;
-      if (redMobNow <= 1) line -= 90;
-      if (reachDrop >= 2) line -= 40;
-      if (reachDrop >= 3) line -= 65;
+      const sq = W.squeeze * ph.squeeze;
+      if (mobDrop >= 1) line -= sq * mobDrop;
+      if (mobDrop >= 2) line -= 35 * ph.squeeze;
+      if (mobDrop >= 3) line -= 70 * ph.squeeze;
+      if (redMobNow <= 2) line -= 60 * ph.flex;
+      if (redMobNow <= 1) line -= 120 * ph.flex;
+      if (redMobNow === 0) line -= 200 * ph.flex;
+      if (reachDrop >= 2) line -= 40 * ph.depth;
+      if (reachDrop >= 3) line -= 65 * ph.depth;
+      if (chainNow <= 2) line -= 50 * ph.chain;
+      if (chainNow <= 1) line -= 100 * ph.chain;
 
       if (line < worst) worst = line;
     }
@@ -1101,6 +1174,8 @@ body {
   }
 
   function sortMoves(moves, state, side, from, pv) {
+    const phase = phaseScale(countVisited(state));
+    const flexSort = 120 * phase.flex;
     moves.sort((a, b) => {
       let sa = 0;
       let sb = 0;
@@ -1115,8 +1190,14 @@ body {
       if (willBeCapturedNextTurn(state, side, a)) sa -= 600000;
       if (willBeCapturedNextTurn(state, side, b)) sb -= 600000;
 
-      sa += moveFlexibility(state, side, a, false) * 120;
-      sb += moveFlexibility(state, side, b, false) * 120;
+      sa += moveFlexibility(state, side, a, false) * flexSort;
+      sb += moveFlexibility(state, side, b, false) * flexSort;
+      if (side === RED && phase.t > 0.35) {
+        sa += mob(na, RED) * 50 * phase.node;
+        sb += mob(nb, RED) * 50 * phase.node;
+        sa += reachableSpaces(na, RED, 4) * 12 * phase.depth;
+        sb += reachableSpaces(nb, RED, 4) * 12 * phase.depth;
+      }
       if (side === RED && isNearOpponent(state, side, a)) sa -= 8000;
       if (side === RED && isNearOpponent(state, side, b)) sb -= 8000;
 
@@ -1237,21 +1318,30 @@ body {
     if (kind === 'win_next') return WIN_NEXT;
     if (kind === 'fatal') return FATAL;
 
+    const visited = countVisited(state);
+    const phase = phaseScale(visited);
     const next = applyMove(state, RED, move);
     const searchScore = -negamax(next, depth - 1, -Infinity, Infinity, BLUE, 1);
-    const flex = moveFlexibility(state, RED, move, true) * W.flex;
+    const flex = moveFlexibility(state, RED, move, true) * W.flex * phase.flex;
+    const afterMob = mob(next, RED);
+    const afterChain = maxChainDepth(next, RED, visited > 20 ? 10 : 8);
+    const chainBonus = afterChain * W.chain * 12 * phase.chain;
+    const mobBonus = afterMob * W.node * 8 * phase.node;
 
     let pessimistic = searchScore;
     if (depth >= 3 && !timedOut()) {
       const redMobBefore = mob(state, RED);
       const reachBefore = reachableSpaces(state, RED, 4);
-      pessimistic = worstLineAfterRedMove(next, redMobBefore, reachBefore);
+      pessimistic = worstLineAfterRedMove(next, redMobBefore, reachBefore, phase);
     }
 
-    const tactical = searchScore * 0.55 + pessimistic * 0.45;
-    let total = tactical + flex;
+    const tactical = searchScore * phase.tactical + pessimistic * phase.pessimistic;
+    let total = tactical + flex + chainBonus + mobBonus;
+    if (afterMob <= 1) total -= 180 * phase.flex;
+    if (afterMob === 0) total -= 500;
+    if (afterChain <= 2 && visited > 16) total -= 90 * phase.chain;
     const altFar = preferNotNearPlayer(state, RED, getLegalMoves(state, RED).filter((m) => m.r !== move.r || m.c !== move.c));
-    if (isNearOpponent(state, RED, move) && altFar.length) total -= 120;
+    if (isNearOpponent(state, RED, move) && altFar.length && visited < 18) total -= 120;
     return total;
   }
 
@@ -1259,10 +1349,11 @@ body {
   function pickStochastic(scored, visited) {
     if (!scored.length) return null;
     const sorted = scored.slice().sort((a, b) => b.score - a.score);
+    if (visited >= 24) return sorted[0].move;
     const max = sorted[0].score;
     const spread = Math.max(1, max - sorted[sorted.length - 1].score);
-    const band = visited < 12 ? spread * 0.35 : visited < 22 ? spread * 0.22 : spread * 0.12;
-    const topK = visited < 12 ? 6 : visited < 22 ? 4 : 3;
+    const band = visited < 12 ? spread * 0.35 : visited < 22 ? spread * 0.18 : spread * 0.06;
+    const topK = visited < 12 ? 6 : visited < 22 ? 4 : 2;
     let pool = sorted.filter((x) => x.score >= max - band).slice(0, topK);
     if (!pool.length) return sorted[0].move;
     if (pool.length === 1) return pool[0].move;
@@ -1360,10 +1451,25 @@ body {
     const survivable = preferNotNearPlayer(state, RED, filterNotCaptured(state, RED, allMoves));
 
     if (survivable.length) {
-      if (chosen && !willBeCapturedNextTurn(state, RED, chosen)) return chosen;
-      const flexMoves = survivable.slice().sort((a, b) => moveFlexibility(state, RED, b, false) - moveFlexibility(state, RED, a, false));
-      const flexPool = flexMoves.slice(0, Math.min(4, flexMoves.length));
-      if (flexPool.length > 1 && visited < 20) {
+      if (chosen && !willBeCapturedNextTurn(state, RED, chosen)) {
+        if (visited >= 20) {
+          const chosenFlex = moveFlexibility(state, RED, chosen, true);
+          const bestAlt = survivable.reduce((best, m) => {
+            const f = moveFlexibility(state, RED, m, true);
+            return f > best.f ? { m, f } : best;
+          }, { m: survivable[0], f: -Infinity });
+          if (bestAlt.f > chosenFlex * 1.08) return bestAlt.m;
+        }
+        return chosen;
+      }
+      const flexMoves = survivable.slice().sort((a, b) => {
+        const fa = moveFlexibility(state, RED, a, true);
+        const fb = moveFlexibility(state, RED, b, true);
+        if (fb !== fa) return fb - fa;
+        return maxChainDepth(applyMove(state, RED, b), RED, 8) - maxChainDepth(applyMove(state, RED, a), RED, 8);
+      });
+      const flexPool = flexMoves.slice(0, Math.min(visited >= 20 ? 2 : 4, flexMoves.length));
+      if (flexPool.length > 1 && visited < 16) {
         const w = flexPool.map((m) => moveFlexibility(state, RED, m, false));
         const sum = w.reduce((a, b) => a + b, 0);
         let r = Math.random() * sum;
