@@ -892,6 +892,61 @@ body {
     return true;
   }
 
+  /** 对手是否存在「设套 → 逼入唯一（或全部）死路 → 下一步吃子/获胜」 */
+  function opponentCanForceWinAfterMove(state, side, move) {
+    const next = applyMove(state, side, move);
+    const opp = E.opponent(side);
+    if (next.winner === opp) return true;
+
+    let oppMoves = getLegalMoves(next, opp);
+    if (!oppMoves.length) return false;
+
+    oppMoves.sort((a, b) => {
+      const na = applyMove(next, opp, a);
+      const nb = applyMove(next, opp, b);
+      if (na.winner === opp) return -1;
+      if (nb.winner === opp) return 1;
+      return mob(na, side) - mob(nb, side);
+    });
+
+    const limit = Math.min(oppMoves.length, 14);
+    for (let oi = 0; oi < limit; oi++) {
+      const om = oppMoves[oi];
+      const afterOpp = applyMove(next, opp, om);
+      if (afterOpp.winner === opp) return true;
+
+      const ourMoves = getLegalMoves(afterOpp, side);
+      if (!ourMoves.length && getLegalMoves(afterOpp, opp).length) return true;
+      if (!ourMoves.length) continue;
+
+      let allResponsesLose = true;
+      for (const rm of ourMoves) {
+        const afterUs = applyMove(afterOpp, side, rm);
+        if (afterUs.winner === side) {
+          allResponsesLose = false;
+          break;
+        }
+        if (afterUs.winner === opp) continue;
+
+        let oppWinsSoon = canCapture(afterUs, opp);
+        if (!oppWinsSoon) {
+          for (const om2 of getLegalMoves(afterUs, opp)) {
+            if (applyMove(afterUs, opp, om2).winner === opp) {
+              oppWinsSoon = true;
+              break;
+            }
+          }
+        }
+        if (!oppWinsSoon) {
+          allResponsesLose = false;
+          break;
+        }
+      }
+      if (allResponsesLose) return true;
+    }
+    return false;
+  }
+
   function classifyMove(state, side, move) {
     if (move.capture) return 'win_now';
     const next = applyMove(state, side, move);
@@ -899,6 +954,7 @@ body {
     if (next.winner === E.opponent(side)) return 'fatal';
     if (isForcedOpponentLoss(next, side)) return 'win_next';
     if (willBeCapturedNextTurn(state, side, move)) return 'fatal';
+    if (opponentCanForceWinAfterMove(state, side, move)) return 'fatal';
     for (const om of getLegalMoves(next, E.opponent(side))) {
       if (applyMove(next, E.opponent(side), om).winner === E.opponent(side)) return 'fatal';
     }
