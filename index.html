@@ -567,7 +567,7 @@ body {
     </main>
 
     <footer class="footer">
-      <p>© Phier · 游戏设计 <strong>Thisaway</strong> · 网页版 AI 采用 Negamax + Alpha-Beta 搜索</p>
+      <p>© Phier · 游戏设计 <strong>Thisaway</strong> · 网页版 AI：GPT-6 迭代加深 PVS + 置换表</p>
     </footer>
   </div>
   <script>
@@ -742,816 +742,462 @@ body {
   </script>
   <script>
 /**
- * Thisaway AI — 强调远见(可达深度)与后备(选择数量)
+ * Model: OpenAI GPT-6 | Version: 1.0.0
+ * Strategy: iterative-deepening PVS, transpositions, safe mobility and territory,
+ * with engine-driven survival estimates in small disconnected regions.
+ * Export: globalThis.ThisawayAI (load ThisawayEngine first).
+ * ES2020; no dependencies, I/O, opening book, or external services.
  */
 (function (global) {
   'use strict';
 
   const E = global.ThisawayEngine;
-  const { RED, BLUE, EMPTY, SIZE, posKey, getLegalMoves, applyMove, getSidePos, isOnBoard, countVisited } = E;
+  if (!E) throw new Error('Load ThisawayEngine before ai-gpt-6.js');
 
-  const WIN = 100000;
-  const LOSE = -100000;
-  const FATAL = LOSE + 1;
-  const WIN_NOW = WIN;
-  const WIN_NEXT = WIN - 1;
+  const { SIZE, RED, BLUE, EMPTY, getLegalMoves, applyMove, opponent } = E;
+  const CELLS = SIZE * SIZE;
+  const WIN = 1000000;
+  const MATE = WIN - 1000;
+  const INF = WIN + 1000;
+  const TT_LIMIT = 70000;
+  const SURVIVAL_LIMIT = 30000;
+  const TIMEOUT = {};
+  const now = global.performance && typeof global.performance.now === 'function'
+    ? function () { return global.performance.now(); }
+    : function () { return Date.now(); };
 
-  /** 对应 Master.m：depth_weight / node_weight；后期 phaseScale 会放大远见/后备 */
-  const W = { depth: 9.5, node: 7.0, control: 0.85, defense: 1.4, trap: 18, squeeze: 32, flex: 3.2, chain: 14 };
+  const bitLo = new Int32Array(CELLS);
+  const bitHi = new Int32Array(CELLS);
+  const graph = new Array(CELLS);
+  const positional = new Int16Array(CELLS);
+  const history = [new Int32Array(CELLS), new Int32Array(CELLS), new Int32Array(CELLS)];
+  const killers = new Int16Array((CELLS + 3) * 2);
+  const transpositions = new Map();
+  const survivalCache = new Map();
 
-  let zobristCell;
-  let zobristRed;
-  let zobristBlue;
-  let zobristTurn;
-
-  (function initZobrist() {
-    const rnd = () => (Math.random() * 0x7fffffff) | 0;
-    zobristCell = new Int32Array(SIZE * SIZE * 3);
-    zobristRed = new Int32Array(SIZE * SIZE);
-    zobristBlue = new Int32Array(SIZE * SIZE);
-    zobristTurn = rnd();
-    for (let i = 0; i < zobristCell.length; i++) zobristCell[i] = rnd();
-    for (let i = 0; i < zobristRed.length; i++) {
-      zobristRed[i] = rnd();
-      zobristBlue[i] = rnd();
-    }
-  })();
-
-  const tt = new Map();
-  const history = new Int32Array(SIZE * SIZE * SIZE * SIZE);
-
-  let deadline = 0;
-  let aborted = false;
-  let nodes = 0;
-  let lastDepth = 0;
-  let flexMemo = null;
-
-  function timedOut() {
-    return deadline > 0 && performance.now() >= deadline;
+  // This graph is for evaluation and ordering only. Every edge comes from E;
+  // actual search moves and all winning/losing results always come from E.
+  const probe = E.createInitialState();
+  probe.board = new Int8Array(CELLS);
+  probe.blue = { r: -1, c: -1 };
+  for (let i = 0; i < CELLS; i++) {
+    if (i < 32) bitLo[i] = 1 << i;
+    else bitHi[i] = 1 << (i - 32);
+    probe.red = { r: Math.floor(i / SIZE), c: i % SIZE };
+    graph[i] = getLegalMoves(probe, RED).map(function (m) { return m.r * SIZE + m.c; });
+    const r = Math.floor(i / SIZE);
+    const c = i % SIZE;
+    positional[i] = graph[i].length * 3 - Math.abs(2 * r - SIZE + 1) - Math.abs(2 * c - SIZE + 1);
   }
 
-  function hashState(state, sideToMove) {
-    let h = sideToMove === RED ? zobristTurn : 0;
-    for (let i = 0; i < state.board.length; i++) {
-      const v = state.board[i];
-      if (v) h ^= zobristCell[i * 3 + v];
-    }
-    if (isOnBoard(state, RED)) h ^= zobristRed[posKey(state.red.r, state.red.c)];
-    if (isOnBoard(state, BLUE)) h ^= zobristBlue[posKey(state.blue.r, state.blue.c)];
-    return h >>> 0;
-  }
-
-  function histIndex(from, to) {
-    return ((from.r * SIZE + from.c) * SIZE * SIZE + to.r * SIZE + to.c) | 0;
-  }
-
-  function mob(state, side) {
-    return getLegalMoves(state, side).length;
-  }
-
-  /** 0=开局，1=残局；后期 depth/node/flex 权重更大 */
-  function phaseScale(visited) {
-    const t = Math.min(1, Math.max(0, (visited - 6) / 26));
+  function emptyStats() {
     return {
-      t,
-      depth: 1 + t * 3.2,
-      node: 1 + t * 2.4,
-      flex: 1 + t * 4.5,
-      chain: 1 + t * 5.5,
-      squeeze: 1 + t * 1.8,
-      tactical: 0.62 - t * 0.22,
-      pessimistic: 0.38 + t * 0.22,
+      nodes: 0, depth: 0, elapsedMs: 0, score: null, solved: false,
+      ttHits: 0, cutoffs: 0, survivalNodes: 0, timedOut: false
     };
   }
 
-  /**
-   * 类似 MATLAB maxdepth_ai：从当前局面连续还能走多少步（不重复格子）
-   * 剪枝：每层只展开后备最多的若干着，避免爆炸
-   */
-  function maxChainDepth(state, side, maxPly) {
-    if (!isOnBoard(state, side)) return 0;
-    let best = 0;
+  let lastStats = emptyStats();
+  let activeStats = lastStats;
+  let deadline = Infinity;
 
-    function dfs(st, ply) {
-      if (ply > best) best = ply;
-      if (ply >= maxPly || timedOut()) return;
+  function checkTime() {
+    if (now() >= deadline) throw TIMEOUT;
+  }
 
-      let moves = getLegalMoves(st, side);
-      moves.sort((a, b) => {
-        if (a.capture !== b.capture) return a.capture ? -1 : 1;
-        const na = applyMove(st, side, a);
-        const nb = applyMove(st, side, b);
-        return mob(nb, side) - mob(na, side);
-      });
-      const limit = ply >= 4 ? 4 : 6;
-      let expanded = 0;
-      for (const m of moves) {
-        if (expanded >= limit) break;
-        if (m.capture) {
-          best = Math.max(best, ply + 1);
-          continue;
-        }
-        if (hangsAfterMove(st, side, m)) continue;
-        const next = applyMove(st, side, m);
-        if (next.winner === side) {
-          best = Math.max(best, ply + 1);
-          continue;
-        }
-        if (next.winner === E.opponent(side)) continue;
-        expanded++;
-        dfs(next, ply + 1);
+  function square(move) {
+    return move.r * SIZE + move.c;
+  }
+
+  function head(state, side) {
+    const p = side === RED ? state.red : state.blue;
+    return p.r * SIZE + p.c;
+  }
+
+  function copyMove(move) {
+    return move ? { r: move.r, c: move.c, capture: !!move.capture } : null;
+  }
+
+  function terminalScore(state, side, ply) {
+    if (state.winner === RED || state.winner === BLUE) {
+      return state.winner === side ? WIN - ply : -WIN + ply;
+    }
+    return 0;
+  }
+
+  function occupancy(state) {
+    let lo = 0;
+    let hi = 0;
+    for (let i = 0; i < CELLS; i++) {
+      if (state.board[i] !== EMPTY) {
+        lo |= bitLo[i];
+        hi |= bitHi[i];
       }
     }
+    // Normalize current heads as occupied. They become footprints when they
+    // move, and the engine handles captures independently of board color.
+    for (const side of [RED, BLUE]) {
+      if (E.isOnBoard(state, side)) {
+        const p = head(state, side);
+        lo |= bitLo[p];
+        hi |= bitHi[p];
+      }
+    }
+    return { lo: lo >>> 0, hi: hi >>> 0 };
+  }
 
-    dfs(state, 0);
+  function positionKey(state, side, lo, hi) {
+    // Exact identity, rather than a collision-prone hash. Board colors have
+    // identical blocking behavior in E; both head positions and turn matter.
+    return lo + ':' + (hi * 8192 + head(state, RED) * 128 + head(state, BLUE) * 2 + (side === BLUE ? 1 : 0));
+  }
+
+  function fromTable(score, ply) {
+    return score > MATE ? score - ply : score < -MATE ? score + ply : score;
+  }
+
+  function toTable(score, ply) {
+    return score > MATE ? score + ply : score < -MATE ? score - ply : score;
+  }
+
+  function remember(key, depth, score, flag, best, ply) {
+    const previous = transpositions.get(key);
+    if (previous && previous.depth > depth) return;
+    if (!previous && transpositions.size >= TT_LIMIT) return;
+    transpositions.set(key, { depth, score: toTable(score, ply), flag, best });
+  }
+
+  function orderMoves(moves, side, ply, preferred) {
+    const firstKiller = killers[ply * 2];
+    const secondKiller = killers[ply * 2 + 1];
+    const ranked = moves.map(function (move) {
+      const p = square(move);
+      let rank = history[side][p] + positional[p];
+      if (p === secondKiller) rank += 200000;
+      if (p === firstKiller) rank += 300000;
+      if (p === preferred) rank += 1000000;
+      if (move.capture) rank += 10000000;
+      return { move, rank, p };
+    });
+    ranked.sort(function (a, b) { return b.rank - a.rank || a.p - b.p; });
+    return ranked.map(function (entry) { return entry.move; });
+  }
+
+  function recordCutoff(side, move, depth, ply) {
+    const p = square(move);
+    if (killers[ply * 2] !== p) {
+      killers[ply * 2 + 1] = killers[ply * 2];
+      killers[ply * 2] = p;
+    }
+    history[side][p] = Math.min(100000, history[side][p] + depth * depth);
+    activeStats.cutoffs++;
+  }
+
+  function flood(start, other, lo, hi) {
+    const distance = new Int8Array(CELLS);
+    distance.fill(-1);
+    const queue = new Int8Array(CELLS);
+    let front = 0;
+    let back = 1;
+    let count = 0;
+    let freeLo = 0;
+    let freeHi = 0;
+    let contact = false;
+    queue[0] = start;
+    distance[start] = 0;
+    while (front < back) {
+      const p = queue[front++];
+      const edges = graph[p];
+      for (let j = 0; j < edges.length; j++) {
+        const q = edges[j];
+        // Include a possible route to the opposing head in the connectivity
+        // test, even though that square is occupied in the normalized mask.
+        if (q === other) contact = true;
+        if (distance[q] >= 0 || (lo & bitLo[q]) || (hi & bitHi[q])) continue;
+        distance[q] = distance[p] + 1;
+        queue[back++] = q;
+        freeLo |= bitLo[q];
+        freeHi |= bitHi[q];
+        count++;
+      }
+    }
+    return { distance, count, lo: freeLo >>> 0, hi: freeHi >>> 0, contact };
+  }
+
+  function survivalLength(state, side, freeLo, freeHi) {
+    checkTime();
+    activeStats.survivalNodes++;
+    // Absolute board bits make cached regions unambiguous across components.
+    const key = freeLo + ':' + (freeHi * 64 + head(state, side));
+    if (survivalCache.has(key)) return survivalCache.get(key);
+    const moves = getLegalMoves(state, side);
+    let best = 0;
+    for (let i = 0; i < moves.length; i++) {
+      checkTime();
+      const move = moves[i];
+      const p = square(move);
+      const child = applyMove(state, side, move);
+      const length = child.roundOver || child.matchOver ? 1 : 1 + survivalLength(
+        child, side, (freeLo & ~bitLo[p]) >>> 0, (freeHi & ~bitHi[p]) >>> 0
+      );
+      if (length > best) best = length;
+    }
+    if (survivalCache.size < SURVIVAL_LIMIT) survivalCache.set(key, best);
     return best;
   }
 
-  function willBeCapturedNextTurn(state, side, move) {
-    if (move.capture) return false;
-    const next = applyMove(state, side, move);
-    if (next.winner === side) return false;
-    const me = getSidePos(next, side);
-    for (const m of getLegalMoves(next, E.opponent(side))) {
-      if (m.r === me.r && m.c === me.c) return true;
+  function evaluate(state, side, moves, lo, hi) {
+    checkTime();
+    const otherSide = opponent(side);
+    const otherMoves = getLegalMoves(state, otherSide);
+    const mine = flood(head(state, side), head(state, otherSide), lo, hi);
+    const theirs = flood(head(state, otherSide), head(state, side), lo, hi);
+    const separate = !mine.contact && !theirs.contact &&
+      !(mine.lo & theirs.lo) && !(mine.hi & theirs.hi);
+
+    let myTargetsLo = 0;
+    let myTargetsHi = 0;
+    let theirTargetsLo = 0;
+    let theirTargetsHi = 0;
+    for (let i = 0; i < moves.length; i++) {
+      const p = square(moves[i]);
+      myTargetsLo |= bitLo[p];
+      myTargetsHi |= bitHi[p];
     }
-    return false;
-  }
-
-  function hangsAfterMove(state, side, move) {
-    return willBeCapturedNextTurn(state, side, move);
-  }
-
-  function isForcedOpponentLoss(stateAfterOurMove, mover) {
-    const opp = E.opponent(mover);
-    const oppMoves = getLegalMoves(stateAfterOurMove, opp);
-    if (oppMoves.length === 0) return true;
-    for (const om of oppMoves) {
-      if (applyMove(stateAfterOurMove, opp, om).winner !== mover) return false;
+    for (let i = 0; i < otherMoves.length; i++) {
+      const p = square(otherMoves[i]);
+      theirTargetsLo |= bitLo[p];
+      theirTargetsHi |= bitHi[p];
     }
-    return true;
-  }
+    let mySafe = 0;
+    let theirSafe = 0;
+    for (let i = 0; i < moves.length; i++) {
+      const p = square(moves[i]);
+      if (!(theirTargetsLo & bitLo[p]) && !(theirTargetsHi & bitHi[p])) mySafe++;
+    }
+    for (let i = 0; i < otherMoves.length; i++) {
+      const p = square(otherMoves[i]);
+      if (!(myTargetsLo & bitLo[p]) && !(myTargetsHi & bitHi[p])) theirSafe++;
+    }
 
-  /** 对手是否存在「设套 → 逼入唯一（或全部）死路 → 下一步吃子/获胜」 */
-  function opponentCanForceWinAfterMove(state, side, move) {
-    const next = applyMove(state, side, move);
-    const opp = E.opponent(side);
-    if (next.winner === opp) return true;
-
-    let oppMoves = getLegalMoves(next, opp);
-    if (!oppMoves.length) return false;
-
-    oppMoves.sort((a, b) => {
-      const na = applyMove(next, opp, a);
-      const nb = applyMove(next, opp, b);
-      if (na.winner === opp) return -1;
-      if (nb.winner === opp) return 1;
-      return mob(na, side) - mob(nb, side);
-    });
-
-    const limit = Math.min(oppMoves.length, 14);
-    for (let oi = 0; oi < limit; oi++) {
-      const om = oppMoves[oi];
-      const afterOpp = applyMove(next, opp, om);
-      if (afterOpp.winner === opp) return true;
-
-      const ourMoves = getLegalMoves(afterOpp, side);
-      if (!ourMoves.length && getLegalMoves(afterOpp, opp).length) return true;
-      if (!ourMoves.length) continue;
-
-      let allResponsesLose = true;
-      for (const rm of ourMoves) {
-        const afterUs = applyMove(afterOpp, side, rm);
-        if (afterUs.winner === side) {
-          allResponsesLose = false;
-          break;
-        }
-        if (afterUs.winner === opp) continue;
-
-        let oppWinsSoon = canCapture(afterUs, opp);
-        if (!oppWinsSoon) {
-          for (const om2 of getLegalMoves(afterUs, opp)) {
-            if (applyMove(afterUs, opp, om2).winner === opp) {
-              oppWinsSoon = true;
-              break;
-            }
-          }
-        }
-        if (!oppWinsSoon) {
-          allResponsesLose = false;
-          break;
-        }
+    let territory = 0;
+    let proximity = 0;
+    for (let p = 0; p < CELLS; p++) {
+      if ((lo & bitLo[p]) || (hi & bitHi[p])) continue;
+      const a = mine.distance[p];
+      const b = theirs.distance[p];
+      if (a < 0 && b < 0) continue;
+      if (b < 0) territory += 2;
+      else if (a < 0) territory -= 2;
+      else {
+        territory += Math.max(-2, Math.min(2, b - a));
+        proximity += 1 / (a + 1) - 1 / (b + 1);
       }
-      if (allResponsesLose) return true;
-    }
-    return false;
-  }
-
-  function classifyMove(state, side, move) {
-    if (move.capture) return 'win_now';
-    const next = applyMove(state, side, move);
-    if (next.winner === side) return 'win_now';
-    if (next.winner === E.opponent(side)) return 'fatal';
-    if (isForcedOpponentLoss(next, side)) return 'win_next';
-    if (willBeCapturedNextTurn(state, side, move)) return 'fatal';
-    if (opponentCanForceWinAfterMove(state, side, move)) return 'fatal';
-    for (const om of getLegalMoves(next, E.opponent(side))) {
-      if (applyMove(next, E.opponent(side), om).winner === E.opponent(side)) return 'fatal';
-    }
-    return 'safe';
-  }
-
-  function filterNotCaptured(state, side, moves) {
-    return moves.filter((m) => m.capture || !willBeCapturedNextTurn(state, side, m));
-  }
-
-  function partitionMoves(state, side, moves) {
-    const winNow = [];
-    const winNext = [];
-    const safe = [];
-    const fatal = [];
-    for (const m of moves) {
-      const kind = classifyMove(state, side, m);
-      if (kind === 'win_now') winNow.push(m);
-      else if (kind === 'win_next') winNext.push(m);
-      else if (kind === 'safe') safe.push(m);
-      else fatal.push(m);
-    }
-    return { winNow, winNext, safe, fatal };
-  }
-
-  /** MATLAB：除非无路可走，否则不主动走到玩家马步/对角邻格 */
-  function isNearOpponent(state, side, move) {
-    const oppSide = E.opponent(side);
-    if (!isOnBoard(state, oppSide)) return false;
-    const opp = getSidePos(state, oppSide);
-    const dr = Math.abs(move.r - opp.r);
-    const dc = Math.abs(move.c - opp.c);
-    return (dr === 1 && dc === 1) || (dr === 1 && dc === 2) || (dr === 2 && dc === 1);
-  }
-
-  function preferNotNearPlayer(state, side, moves) {
-    const far = moves.filter((m) => !isNearOpponent(state, side, m));
-    return far.length ? far : moves;
-  }
-
-  function canCapture(state, side) {
-    const opp = E.opponent(side);
-    if (!isOnBoard(state, opp)) return false;
-    const oppPos = getSidePos(state, opp);
-    for (const m of getLegalMoves(state, side)) {
-      if (m.capture && m.r === oppPos.r && m.c === oppPos.c) return true;
-    }
-    return false;
-  }
-
-  function movesFrom(state, side, from) {
-    const oppSide = E.opponent(side);
-    const opp = getSidePos(state, oppSide);
-    const oppLive = isOnBoard(state, oppSide);
-    const out = [];
-    for (const { dr, dc } of E.OFFSETS) {
-      const r = from.r + dr;
-      const c = from.c + dc;
-      if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) continue;
-      if (oppLive && r === opp.r && c === opp.c) out.push({ r, c, capture: true });
-      else if (state.board[posKey(r, c)] === EMPTY) out.push({ r, c, capture: false });
-    }
-    return out;
-  }
-
-  function reachableSpaces(state, side, steps) {
-    const start = getSidePos(state, side);
-    if (!isOnBoard(state, side)) return 0;
-    const seen = new Set([posKey(start.r, start.c)]);
-    let layer = [start];
-    let total = 0;
-    for (let s = 0; s < steps && layer.length; s++) {
-      const next = [];
-      for (const p of layer) {
-        for (const m of movesFrom(state, side, p)) {
-          if (m.capture) continue;
-          const k = posKey(m.r, m.c);
-          if (seen.has(k)) continue;
-          seen.add(k);
-          total++;
-          next.push(m);
-        }
-      }
-      layer = next;
-    }
-    return total;
-  }
-
-  /** MATLAB 早期：再走一步后的后备选择总量 */
-  function twoStepBranchCount(state, side, move) {
-    const next = applyMove(state, side, move);
-    if (next.winner) return 100;
-    let total = 0;
-    for (const m2 of getLegalMoves(next, side)) {
-      if (hangsAfterMove(next, side, m2)) continue;
-      const n2 = applyMove(next, side, m2);
-      total += Math.max(0, mob(n2, side));
-    }
-    return total;
-  }
-
-  /** 离边越近越差，鼓励占开阔区域 */
-  function opennessAt(r, c) {
-    const edge = Math.min(r, c, SIZE - 1 - r, SIZE - 1 - c);
-    return edge;
-  }
-
-  function controlRatio(state, side) {
-    const mine = getLegalMoves(state, side);
-    const theirs = getLegalMoves(state, E.opponent(side));
-    if (!theirs.length) return 1;
-    const set = new Set(theirs.map((m) => posKey(m.r, m.c)));
-    let hit = 0;
-    for (const m of mine) {
-      if (set.has(posKey(m.r, m.c))) hit++;
-    }
-    return hit / theirs.length;
-  }
-
-  function safeMoveRatio(state, side) {
-    const moves = getLegalMoves(state, side);
-    if (!moves.length) return 0;
-    let safe = 0;
-    for (const m of moves) {
-      if (m.capture || !hangsAfterMove(state, side, m)) safe++;
-    }
-    return safe / moves.length;
-  }
-
-  /**
-   * 着法灵活度：即时后备 + 多步可达空间 + 2 步分支（MATLAB 思路）
-   */
-  function moveFlexibility(state, side, move, full) {
-    const visited = countVisited(state);
-    const phase = phaseScale(visited);
-    const key = `${move.r},${move.c},${full ? 'f' : 'q'},${visited}`;
-    if (flexMemo && flexMemo.has(key)) return flexMemo.get(key);
-
-    const next = applyMove(state, side, move);
-    if (next.winner === side) return 10000;
-    const m0 = mob(next, side);
-    const r3 = reachableSpaces(next, side, 3);
-    const chain = full ? maxChainDepth(next, side, visited > 20 ? 10 : 8) : 0;
-    const chainW = 55 * phase.chain;
-    const mobW = (full ? 22 : 18) * phase.node;
-    const reachW = (full ? 11 : 9) * phase.depth;
-    let score = m0 * mobW + r3 * reachW + chain * chainW + opennessAt(move.r, move.c) * 3;
-    if (m0 <= 1) score -= 120 * phase.flex;
-    if (m0 === 0) score -= 400;
-    if (!full) {
-      if (flexMemo) flexMemo.set(key, score);
-      return score;
-    }
-    const r4 = reachableSpaces(next, side, 4);
-    const r5 = reachableSpaces(next, side, 5);
-    const branch = twoStepBranchCount(state, side, move);
-    score += r4 * 8 * phase.depth + r5 * 5 * phase.depth + branch * 6 * phase.node;
-    if (flexMemo) flexMemo.set(key, score);
-    return score;
-  }
-
-  function evaluate(state) {
-    if (canCapture(state, RED)) return WIN - 120;
-    if (canCapture(state, BLUE)) return LOSE + 120;
-
-    const redM = getLegalMoves(state, RED);
-    const blueM = getLegalMoves(state, BLUE);
-
-    if (!blueM.length && redM.length) return WIN - 80;
-    if (!redM.length && blueM.length) return LOSE + 80;
-    if (!redM.length && !blueM.length) return 0;
-
-    const visited = countVisited(state);
-    const phase = phaseScale(visited);
-    const reachSteps = visited > 22 ? 6 : visited > 12 ? 5 : 3;
-
-    const redReach = reachableSpaces(state, RED, reachSteps);
-    const blueReach = reachableSpaces(state, BLUE, reachSteps);
-    const depthTerm = (redReach - blueReach) * W.depth * phase.depth;
-
-    const nodeTerm = (redM.length - blueM.length) * W.node * phase.node;
-    const ctrlTerm = (controlRatio(state, RED) - controlRatio(state, BLUE)) * W.control * 14;
-
-    const redSafe = safeMoveRatio(state, RED);
-    const blueSafe = safeMoveRatio(state, BLUE);
-    const defTerm = (redSafe - blueSafe) * W.defense * 35;
-
-    const dangerTerm = canCapture(state, BLUE) ? -90 : 0;
-
-    let trapTerm = 0;
-    if (blueM.length <= 2 && redM.length > blueM.length) trapTerm += (3 - blueM.length) * W.trap;
-    if (redM.length <= 2 && blueM.length > redM.length) trapTerm -= (3 - redM.length) * W.trap;
-
-    const me = getSidePos(state, RED);
-    const redOpen = opennessAt(me.r, me.c);
-    const bluePos = getSidePos(state, BLUE);
-    const openTerm = (redOpen - opennessAt(bluePos.r, bluePos.c)) * 2.5;
-
-    return depthTerm + nodeTerm + ctrlTerm + defTerm + dangerTerm + trapTerm + openTerm;
-  }
-
-  function sideEval(state, side) {
-    const e = evaluate(state);
-    return side === RED ? e : -e;
-  }
-
-  function worstLineAfterRedMove(afterRed, redMobBefore, reachBefore, phase) {
-    const blueMoves = getLegalMoves(afterRed, BLUE);
-    if (!blueMoves.length) return WIN - 60;
-    const ph = phase || phaseScale(countVisited(afterRed));
-
-    blueMoves.sort((a, b) => {
-      const na = applyMove(afterRed, BLUE, a);
-      const nb = applyMove(afterRed, BLUE, b);
-      return mob(na, RED) - mob(nb, RED);
-    });
-
-    let worst = Infinity;
-    const blueLimit = Math.min(blueMoves.length, 5);
-    for (let bi = 0; bi < blueLimit; bi++) {
-      const bm = blueMoves[bi];
-      if (timedOut()) break;
-      const afterBlue = applyMove(afterRed, BLUE, bm);
-      if (afterBlue.winner === BLUE) return LOSE + 80;
-
-      const redMobNow = mob(afterBlue, RED);
-      const reachNow = reachableSpaces(afterBlue, RED, 4);
-      const chainNow = maxChainDepth(afterBlue, RED, 8);
-      const mobDrop = redMobBefore - redMobNow;
-      const reachDrop = reachBefore - reachNow;
-
-      let bestCont = -Infinity;
-      const redCont = getLegalMoves(afterBlue, RED);
-      for (let ri = 0; ri < redCont.length; ri++) {
-        if (timedOut()) break;
-        const rm = redCont[ri];
-        if (hangsAfterMove(afterBlue, RED, rm)) continue;
-        const afterRed2 = applyMove(afterBlue, RED, rm);
-        if (afterRed2.winner === RED) {
-          bestCont = WIN - 40;
-          break;
-        }
-        let cont = evaluate(afterRed2) + moveFlexibility(afterBlue, RED, rm, false) * 0.28;
-        if (mob(afterRed2, RED) <= 2) cont -= 65;
-        if (reachableSpaces(afterRed2, RED, 4) <= 3) cont -= 45;
-        if (bestCont < cont) bestCont = cont;
-      }
-      if (bestCont === -Infinity) bestCont = LOSE + 60;
-
-      let line = bestCont;
-      const sq = W.squeeze * ph.squeeze;
-      if (mobDrop >= 1) line -= sq * mobDrop;
-      if (mobDrop >= 2) line -= 35 * ph.squeeze;
-      if (mobDrop >= 3) line -= 70 * ph.squeeze;
-      if (redMobNow <= 2) line -= 60 * ph.flex;
-      if (redMobNow <= 1) line -= 120 * ph.flex;
-      if (redMobNow === 0) line -= 200 * ph.flex;
-      if (reachDrop >= 2) line -= 40 * ph.depth;
-      if (reachDrop >= 3) line -= 65 * ph.depth;
-      if (chainNow <= 2) line -= 50 * ph.chain;
-      if (chainNow <= 1) line -= 100 * ph.chain;
-
-      if (line < worst) worst = line;
-    }
-    return worst;
-  }
-
-  function isTactical(state, side) {
-    if (canCapture(state, side) || canCapture(state, E.opponent(side))) return true;
-    const myM = mob(state, side);
-    const opM = mob(state, E.opponent(side));
-    return myM <= 4 || opM <= 4;
-  }
-
-  function sortMoves(moves, state, side, from, pv) {
-    const phase = phaseScale(countVisited(state));
-    const flexSort = 120 * phase.flex;
-    moves.sort((a, b) => {
-      let sa = 0;
-      let sb = 0;
-      if (a.capture) sa += 500000;
-      if (b.capture) sb += 500000;
-      const na = applyMove(state, side, a);
-      const nb = applyMove(state, side, b);
-      if (na.winner === side) sa += 500000;
-      if (nb.winner === side) sb += 500000;
-      if (isForcedOpponentLoss(na, side)) sa += 400000;
-      if (isForcedOpponentLoss(nb, side)) sb += 400000;
-      if (willBeCapturedNextTurn(state, side, a)) sa -= 600000;
-      if (willBeCapturedNextTurn(state, side, b)) sb -= 600000;
-
-      sa += moveFlexibility(state, side, a, false) * flexSort;
-      sb += moveFlexibility(state, side, b, false) * flexSort;
-      if (side === RED && phase.t > 0.35) {
-        sa += mob(na, RED) * 50 * phase.node;
-        sb += mob(nb, RED) * 50 * phase.node;
-        sa += reachableSpaces(na, RED, 4) * 12 * phase.depth;
-        sb += reachableSpaces(nb, RED, 4) * 12 * phase.depth;
-      }
-      if (side === RED && isNearOpponent(state, side, a)) sa -= 8000;
-      if (side === RED && isNearOpponent(state, side, b)) sb -= 8000;
-
-      if (pv) {
-        if (a.r === pv.r && a.c === pv.c) sa += 50000;
-        if (b.r === pv.r && b.c === pv.c) sb += 50000;
-      }
-      sa += history[histIndex(from, a)] * 4;
-      sb += history[histIndex(from, b)] * 4;
-      return sb - sa;
-    });
-    return moves;
-  }
-
-  function storeTT(key, depth, score, flag, best) {
-    if (tt.size > 80000) tt.clear();
-    const old = tt.get(key);
-    if (!old || old.depth <= depth) tt.set(key, { depth, score, flag, best });
-  }
-
-  function quiescence(state, alpha, beta, side, qDepth) {
-    nodes++;
-    if (aborted || timedOut()) {
-      aborted = true;
-      return sideEval(state, side);
     }
 
-    const stand = sideEval(state, side);
-    if (qDepth <= 0) return stand;
-    if (stand >= beta) return beta;
-    if (stand > alpha) alpha = stand;
+    let value = 28 * (mySafe - theirSafe) + 7 * (moves.length - otherMoves.length) +
+      9 * territory + 10 * (mine.count - theirs.count) + 8 * proximity;
+    if (mySafe === 0) value -= 110;
+    if (theirSafe === 0) value += 110;
+    if (mySafe === 1) value -= 28;
+    if (theirSafe === 1) value += 28;
 
-    const from = getSidePos(state, side);
-    const moves = sortMoves(getLegalMoves(state, side), state, side, from, null);
-
-    for (const move of moves) {
-      const next = applyMove(state, side, move);
-      let score;
-      if (next.winner === side) score = WIN - 4;
-      else if (next.winner === E.opponent(side)) score = LOSE + 4;
-      else if (classifyMove(state, side, move) === 'fatal') {
-        score = side === RED ? FATAL : -FATAL;
-      } else if (move.capture || isTactical(next, E.opponent(side))) {
-        score = -quiescence(next, -beta, -alpha, E.opponent(side), qDepth - 1);
-      } else {
-        continue;
-      }
-      if (score >= beta) return beta;
-      if (score > alpha) alpha = score;
+    if (separate && moves.length && otherMoves.length) {
+      const myLife = mine.count <= 9 ? survivalLength(state, side, mine.lo, mine.hi) : mine.count;
+      const theirLife = theirs.count <= 9 ? survivalLength(state, otherSide, theirs.lo, theirs.hi) : theirs.count;
+      // A survival estimate, including a tempo cost, never a terminal verdict.
+      // Only engine-confirmed wins receive scores in the mate range.
+      value = 300 * (myLife - theirLife) - 120 + value * 0.12;
     }
-    return alpha;
+    return Math.max(-50000, Math.min(50000, Math.round(value)));
   }
 
-  function negamax(state, depth, alpha, beta, side, ply) {
-    nodes++;
-    if (aborted || timedOut()) {
-      aborted = true;
-      return sideEval(state, side);
-    }
+  function search(state, side, depth, alpha, beta, ply, lo, hi) {
+    checkTime();
+    activeStats.nodes++;
+    if (state.roundOver || state.matchOver) return terminalScore(state, side, ply);
 
-    const key = hashState(state, side);
-    const entry = tt.get(key);
+    const key = positionKey(state, side, lo, hi);
+    const initialAlpha = alpha;
+    const initialBeta = beta;
+    const entry = transpositions.get(key);
     if (entry && entry.depth >= depth) {
-      if (entry.flag === 0) return entry.score;
-      if (entry.flag < 0 && entry.score <= alpha) return entry.score;
-      if (entry.flag > 0 && entry.score >= beta) return entry.score;
+      activeStats.ttHits++;
+      const value = fromTable(entry.score, ply);
+      if (entry.flag === 0) return value;
+      if (entry.flag === 1) alpha = Math.max(alpha, value);
+      else beta = Math.min(beta, value);
+      if (alpha >= beta) return value;
     }
 
-    const moves = getLegalMoves(state, side);
-    if (!moves.length) return side === RED ? LOSE + ply : WIN - ply;
-    if (depth === 0) return quiescence(state, alpha, beta, side, 5);
-
-    const from = getSidePos(state, side);
-    const ordered = sortMoves(moves.slice(), state, side, from, entry && entry.best);
-    let bestScore = -Infinity;
-    let bestMove;
-    let flag = 0;
-
-    for (const move of ordered) {
-      const kind = classifyMove(state, side, move);
-      const next = applyMove(state, side, move);
-      let score;
-
-      if (next.winner === RED) score = WIN - ply;
-      else if (next.winner === BLUE) score = LOSE + ply;
-      else if (kind === 'fatal') score = side === RED ? FATAL : -FATAL;
-      else if (kind === 'win_next') score = side === RED ? WIN_NEXT - ply : -(WIN_NEXT - ply);
-      else score = -negamax(next, depth - 1, -beta, -alpha, E.opponent(side), ply + 1);
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestMove = move;
+    const legal = getLegalMoves(state, side);
+    // E can leave roundOver=false when both players have no moves. An empty
+    // branch has a neutral value; it is never manufactured into a win/loss.
+    if (!legal.length) return 0;
+    for (let i = 0; i < legal.length; i++) {
+      if (legal[i].capture) {
+        const child = applyMove(state, side, legal[i]);
+        const value = terminalScore(child, side, ply + 1);
+        remember(key, CELLS + 1, value, 0, square(legal[i]), ply);
+        return value;
       }
-      if (score > alpha) {
-        alpha = score;
-        flag = 0;
+    }
+
+    if (depth <= 0) {
+      const value = evaluate(state, side, legal, lo, hi);
+      remember(key, 0, value, 0, -1, ply);
+      return value;
+    }
+
+    const moves = orderMoves(legal, side, ply, entry ? entry.best : -1);
+    let best = -INF;
+    let bestSquare = -1;
+    for (let i = 0; i < moves.length; i++) {
+      checkTime();
+      const move = moves[i];
+      const p = square(move);
+      const child = applyMove(state, side, move);
+      const nextLo = (lo | bitLo[p]) >>> 0;
+      const nextHi = (hi | bitHi[p]) >>> 0;
+      let value;
+      if (i === 0) {
+        value = -search(child, opponent(side), depth - 1, -beta, -alpha, ply + 1, nextLo, nextHi);
+      } else {
+        value = -search(child, opponent(side), depth - 1, -alpha - 1, -alpha, ply + 1, nextLo, nextHi);
+        if (value > alpha && value < beta) {
+          value = -search(child, opponent(side), depth - 1, -beta, -alpha, ply + 1, nextLo, nextHi);
+        }
       }
+      if (value > best) {
+        best = value;
+        bestSquare = p;
+      }
+      if (value > alpha) alpha = value;
       if (alpha >= beta) {
-        flag = 1;
-        if (kind === 'safe' || kind === 'win_next') history[histIndex(from, move)] += depth * depth;
+        recordCutoff(side, move, depth, ply);
         break;
       }
     }
-
-    if (bestScore <= alpha) flag = -1;
-    else if (bestScore >= beta) flag = 1;
-    storeTT(key, depth, bestScore, flag, bestMove);
-    return bestScore;
-  }
-
-  function scoreRootMove(state, move, depth) {
-    if (timedOut()) {
-      aborted = true;
-      return -Infinity;
-    }
-    const kind = classifyMove(state, RED, move);
-    if (kind === 'win_now') return WIN_NOW;
-    if (kind === 'win_next') return WIN_NEXT;
-    if (kind === 'fatal') return FATAL;
-
-    const visited = countVisited(state);
-    const phase = phaseScale(visited);
-    const next = applyMove(state, RED, move);
-    const searchScore = -negamax(next, depth - 1, -Infinity, Infinity, BLUE, 1);
-    const flex = moveFlexibility(state, RED, move, true) * W.flex * phase.flex;
-    const afterMob = mob(next, RED);
-    const afterChain = maxChainDepth(next, RED, visited > 20 ? 10 : 8);
-    const chainBonus = afterChain * W.chain * 12 * phase.chain;
-    const mobBonus = afterMob * W.node * 8 * phase.node;
-
-    let pessimistic = searchScore;
-    if (depth >= 3 && !timedOut()) {
-      const redMobBefore = mob(state, RED);
-      const reachBefore = reachableSpaces(state, RED, 4);
-      pessimistic = worstLineAfterRedMove(next, redMobBefore, reachBefore, phase);
-    }
-
-    const tactical = searchScore * phase.tactical + pessimistic * phase.pessimistic;
-    let total = tactical + flex + chainBonus + mobBonus;
-    if (afterMob <= 1) total -= 180 * phase.flex;
-    if (afterMob === 0) total -= 500;
-    if (afterChain <= 2 && visited > 16) total -= 90 * phase.chain;
-    const altFar = preferNotNearPlayer(state, RED, getLegalMoves(state, RED).filter((m) => m.r !== move.r || m.c !== move.c));
-    if (isNearOpponent(state, RED, move) && altFar.length && visited < 18) total -= 120;
-    return total;
-  }
-
-  /** 在高分候选中加权随机（MATLAB 早期 to_be_selected.^2 + rand） */
-  function pickStochastic(scored, visited) {
-    if (!scored.length) return null;
-    const sorted = scored.slice().sort((a, b) => b.score - a.score);
-    if (visited >= 24) return sorted[0].move;
-    const max = sorted[0].score;
-    const spread = Math.max(1, max - sorted[sorted.length - 1].score);
-    const band = visited < 12 ? spread * 0.35 : visited < 22 ? spread * 0.18 : spread * 0.06;
-    const topK = visited < 12 ? 6 : visited < 22 ? 4 : 2;
-    let pool = sorted.filter((x) => x.score >= max - band).slice(0, topK);
-    if (!pool.length) return sorted[0].move;
-    if (pool.length === 1) return pool[0].move;
-
-    const minS = pool[pool.length - 1].score;
-    const range = max - minS || 1;
-    const power = visited < 14 ? 2.2 : 1.6;
-    const weights = pool.map((x) => Math.pow((x.score - minS) / range + 0.08, power));
-    const sum = weights.reduce((a, b) => a + b, 0);
-    let r = Math.random() * sum;
-    for (let i = 0; i < pool.length; i++) {
-      r -= weights[i];
-      if (r <= 0) return pool[i].move;
-    }
-    return pool[0].move;
-  }
-
-  function pickBestFlexible(state, moves) {
-    let best = moves[0];
-    let bestFlex = -Infinity;
-    for (const m of moves) {
-      const f = moveFlexibility(state, RED, m);
-      if (f > bestFlex) {
-        bestFlex = f;
-        best = m;
-      }
-    }
+    const flag = best <= initialAlpha ? 2 : best >= initialBeta ? 1 : 0;
+    remember(key, depth, best, flag, bestSquare, ply);
     return best;
   }
 
+  function rootIteration(state, side, moves, depth, preferred, lo, hi) {
+    const ordered = orderMoves(moves, side, 0, preferred);
+    let alpha = -INF;
+    let bestMove = ordered[0];
+    for (let i = 0; i < ordered.length; i++) {
+      checkTime();
+      const move = ordered[i];
+      const p = square(move);
+      const child = applyMove(state, side, move);
+      const nextLo = (lo | bitLo[p]) >>> 0;
+      const nextHi = (hi | bitHi[p]) >>> 0;
+      let score;
+      if (i === 0) {
+        score = -search(child, opponent(side), depth - 1, -INF, INF, 1, nextLo, nextHi);
+      } else {
+        score = -search(child, opponent(side), depth - 1, -alpha - 1, -alpha, 1, nextLo, nextHi);
+        if (score > alpha) {
+          score = -search(child, opponent(side), depth - 1, -INF, -alpha, 1, nextLo, nextHi);
+        }
+      }
+      if (score > alpha) {
+        alpha = score;
+        bestMove = move;
+      }
+    }
+    // Completion includes every required root branch. No partially searched
+    // root best move escapes if the next iteration hits its deadline.
+    checkTime();
+    return { move: bestMove, score: alpha };
+  }
+
   function chooseMove(state, options = {}) {
-    const limit = options.timeLimitMs ?? 550;
-    const maxDepth = options.maxDepth ?? 10;
-    let allMoves = getLegalMoves(state, RED);
-    if (options.noCapture) {
-      allMoves = allMoves.filter((m) => !m.capture);
+    options = options || {};
+    const started = now();
+    lastStats = emptyStats();
+    activeStats = lastStats;
+    const side = options.side === RED || options.side === BLUE ? options.side :
+      state.current === RED || state.current === BLUE ? state.current : RED;
+    const suppliedTime = Number(options.timeLimitMs);
+    const budget = options.timeLimitMs == null || !Number.isFinite(suppliedTime) ? 550 : Math.max(0, suppliedTime);
+    const suppliedDepth = Number(options.maxDepth);
+    const maxDepth = options.maxDepth == null || !Number.isFinite(suppliedDepth) ? 20 :
+      Math.max(0, Math.min(CELLS + 1, Math.floor(suppliedDepth)));
+    const reserve = Math.min(30, Math.max(3, budget * 0.10));
+    deadline = started + Math.max(0, budget - reserve);
+
+    function finish(move) {
+      lastStats.elapsedMs = Math.max(0, now() - started);
+      return copyMove(move);
     }
-    if (!allMoves.length) return null;
 
-    const { winNow, winNext, safe, fatal } = partitionMoves(state, RED, allMoves);
-    if (winNow.length) return winNow[0];
-    if (winNext.length) return winNext[0];
+    if (state.roundOver || state.matchOver) {
+      lastStats.score = terminalScore(state, side, 0);
+      lastStats.solved = true;
+      return finish(null);
+    }
+    if (!E.isOnBoard(state, side) || !E.isOnBoard(state, opponent(side))) return finish(null);
+    let legal = getLegalMoves(state, side);
+    if (options.noCapture) legal = legal.filter(function (move) { return !move.capture; });
+    if (!legal.length) return finish(null);
 
-    const notCaptured = filterNotCaptured(state, RED, safe.length ? safe : allMoves);
-    let searchPool = notCaptured.length ? notCaptured : fatal.length ? fatal : allMoves;
-    searchPool = preferNotNearPlayer(state, RED, searchPool);
+    for (let i = 0; i < legal.length; i++) {
+      if (legal[i].capture) {
+        const child = applyMove(state, side, legal[i]);
+        lastStats.nodes = 1;
+        lastStats.score = terminalScore(child, side, 1);
+        lastStats.solved = !!(child.roundOver || child.matchOver);
+        return finish(legal[i]);
+      }
+    }
 
-    deadline = performance.now() + limit;
-    aborted = false;
-    nodes = 0;
-    lastDepth = 0;
-    flexMemo = new Map();
-
-    let lastScored = searchPool.map((move) => ({ move, score: -Infinity }));
-    let rootPool = searchPool;
-
+    let bestMove = legal[0];
+    if (maxDepth === 0 || now() >= deadline) return finish(bestMove);
+    if (transpositions.size > TT_LIMIT * 0.85) transpositions.clear();
+    if (survivalCache.size > SURVIVAL_LIMIT * 0.85) survivalCache.clear();
+    for (let p = 0; p < CELLS; p++) {
+      history[RED][p] >>= 1;
+      history[BLUE][p] >>= 1;
+    }
+    const occupied = occupancy(state);
+    const fullDepth = CELLS - E.countVisited(state) + 1;
     for (let depth = 1; depth <= maxDepth; depth++) {
-      if (timedOut()) break;
-      if (depth > 4 && lastScored.some((x) => x.score > FATAL + 100)) {
-        const ranked = lastScored.slice().sort((a, b) => b.score - a.score);
-        rootPool = ranked.slice(0, Math.min(5, ranked.length)).map((x) => x.move);
+      try {
+        const completed = rootIteration(state, side, legal, depth, square(bestMove), occupied.lo, occupied.hi);
+        bestMove = completed.move;
+        lastStats.depth = depth;
+        lastStats.score = completed.score;
+        lastStats.solved = Math.abs(completed.score) > MATE || depth >= fullDepth;
+        if (lastStats.solved) break;
+      } catch (error) {
+        if (error !== TIMEOUT) throw error;
+        lastStats.timedOut = true;
+        break;
       }
-      const hint = tt.get(hashState(state, RED));
-      const ordered = sortMoves(rootPool.slice(), state, RED, state.red, hint && hint.best);
-      const roundScores = [];
-      let finished = true;
-
-      for (const move of ordered) {
-        if (timedOut()) {
-          finished = false;
-          break;
-        }
-        roundScores.push({ move, score: scoreRootMove(state, move, depth) });
-        if (aborted) {
-          finished = false;
-          break;
-        }
-      }
-
-      if (finished && roundScores.length) {
-        lastScored = roundScores;
-        lastDepth = depth;
-      } else break;
     }
-
-    if (!lastScored.some((x) => x.score > FATAL + 100)) {
-      lastScored = searchPool.map((move) => ({
-        move,
-        score: moveFlexibility(state, RED, move, false),
-      }));
-    }
-
-    const visited = countVisited(state);
-    let chosen = pickStochastic(lastScored, visited);
-    const survivable = preferNotNearPlayer(state, RED, filterNotCaptured(state, RED, allMoves));
-
-    if (survivable.length) {
-      if (chosen && !willBeCapturedNextTurn(state, RED, chosen)) {
-        if (visited >= 20) {
-          const chosenFlex = moveFlexibility(state, RED, chosen, true);
-          const bestAlt = survivable.reduce((best, m) => {
-            const f = moveFlexibility(state, RED, m, true);
-            return f > best.f ? { m, f } : best;
-          }, { m: survivable[0], f: -Infinity });
-          if (bestAlt.f > chosenFlex * 1.08) return bestAlt.m;
-        }
-        return chosen;
-      }
-      const flexMoves = survivable.slice().sort((a, b) => {
-        const fa = moveFlexibility(state, RED, a, true);
-        const fb = moveFlexibility(state, RED, b, true);
-        if (fb !== fa) return fb - fa;
-        return maxChainDepth(applyMove(state, RED, b), RED, 8) - maxChainDepth(applyMove(state, RED, a), RED, 8);
-      });
-      const flexPool = flexMoves.slice(0, Math.min(visited >= 20 ? 2 : 4, flexMoves.length));
-      if (flexPool.length > 1 && visited < 16) {
-        const w = flexPool.map((m) => moveFlexibility(state, RED, m, false));
-        const sum = w.reduce((a, b) => a + b, 0);
-        let r = Math.random() * sum;
-        for (let i = 0; i < flexPool.length; i++) {
-          r -= w[i];
-          if (r <= 0) return flexPool[i];
-        }
-      }
-      return flexPool[0];
-    }
-
-    return chosen || searchPool[0];
+    return finish(bestMove);
   }
 
   function newRound() {
-    tt.clear();
-    history.fill(0);
-    flexMemo = null;
-    zobristTurn = (Math.random() * 0x7fffffff) | 0;
+    transpositions.clear();
+    survivalCache.clear();
+    history[RED].fill(0);
+    history[BLUE].fill(0);
+    killers.fill(-1);
+    deadline = Infinity;
+    lastStats = emptyStats();
+    activeStats = lastStats;
   }
 
   function getLastSearchStats() {
-    return { nodes, depth: lastDepth };
+    return { ...lastStats };
   }
 
-  global.ThisawayAI = { chooseMove, newRound, getLastSearchStats, WEIGHTS: W };
+  newRound();
+  global.ThisawayAI = { chooseMove, newRound, getLastSearchStats };
 })(typeof window !== 'undefined' ? window : globalThis);
 
   </script>
@@ -2187,7 +1833,7 @@ window.THISAWAY_CONFIG = {
       let move = null;
       try {
         if (legal.length) {
-          move = AI.chooseMove(snapshot, { timeLimitMs: 550, maxDepth: 10 });
+          move = AI.chooseMove(snapshot, { timeLimitMs: 550, maxDepth: 20 });
         }
       } catch (err) {
         console.error('[Thisaway] AI error', err);
