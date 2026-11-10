@@ -1,3 +1,12 @@
 {
-  "entries": []
+  "entries": [
+    {
+      "username": "Phier",
+      "playerWins": 0,
+      "aiWins": 4,
+      "thinkTimeMs": 23496,
+      "playedAt": "2026-11-10T15:54:43+08:00",
+      "submittedAt": "2026-11-10T07:55:33.911Z"
+    }
+  ]
 }
